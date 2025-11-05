@@ -23,6 +23,12 @@ def main():
             conf.save()
             print(f'Configuration saved to: {fn}')
     else:
+        legacy_fn = config.Config.get_config_file(True)
+        if os.path.exists(legacy_fn) \
+           and not os.path.exists(config.Config.get_config_file()):
+            conf = config.Config.load(legacy_fn)
+            conf.save()
+            os.unlink(legacy_fn)
         gui.main(conf, opts.input_file)
 
 

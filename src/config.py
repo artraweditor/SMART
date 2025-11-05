@@ -37,8 +37,11 @@ class Config:
         return Path(__file__).parent / '../models/' / self.model
 
     @staticmethod
-    def get_config_file():
-        return os.path.join(user_config_dir(), "artpixls-SMART.json")
+    def get_config_file(legacy=False):
+        if legacy:
+            return os.path.join(user_config_dir(), "artpixls-SMART.json")
+        else:
+            return os.path.join(user_config_dir(), "ART", "SMART.json")
 
     @staticmethod
     def load(filename=None):
@@ -53,6 +56,7 @@ class Config:
     def save(self, filename=None):
         if filename is None:
             filename = Config.get_config_file()
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
         with open(filename, 'w') as out:
             json.dump(dataclasses.asdict(self), out, indent=2, sort_keys=True)
             out.write('\n')
