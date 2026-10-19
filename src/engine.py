@@ -165,8 +165,8 @@ class AIMaskingEngine:
         if self.mask is not None:
             mask = (self.mask * 255).astype(np.uint8)
         else:
-            mask = np.zeros_like(self.image)
-        img = Image.fromarray((self.mask * 255).astype(np.uint8))
+            mask = np.zeros(self.image.shape[:2], dtype=np.uint8)
+        img = Image.fromarray(mask)
         img.save(filename)
         data = {
             'image' : self.image_filename,

@@ -353,8 +353,12 @@ class MainFrame(wx.Frame):
             return True
         dd = str(self.filename.parent)
         df = str(self.filename.stem + "_mask.png")
+        # NOTE: wxWidgets 3.2.9 on macOS asserts (index out of bounds) in
+        # FileDialog.ShowModal() with FD_SAVE and a single wildcard filter,
+        # so we add a second one as a workaround
         with wx.FileDialog(self, "Save Mask",
-                           wildcard="PNG files (*.png)|*.png",
+                           wildcard="PNG files (*.png)|*.png|"
+                           "All files (*.*)|*.*",
                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
                            defaultDir=dd, defaultFile=df) as fd:
             if fd.ShowModal() == wx.ID_CANCEL:
