@@ -361,8 +361,9 @@ class ImagePanel(wx.Panel):
 
 
 class MainFrame(wx.Frame):
-    def __init__(self, conf, engine, mode='mask'):
+    def __init__(self, conf, engine, mode='mask', outdir=None):
         self.mode = mode
+        self.outdir = outdir    # default directory of the save dialog
         title = "SMART AI mask builder" if mode == 'mask' \
             else "SMART AI healing"
         super().__init__(None, title=title + " - v" + config.version,
@@ -383,8 +384,9 @@ class MainFrame(wx.Frame):
             msg = "shift+left click: add positive point; " \
                 "shift+right click: add negative point   "
         else:
+            key = "Cmd" if wx.Platform == '__WXMAC__' else "Ctrl"
             msg = "shift+left drag: paint; shift+right drag: erase; " \
-                "wheel: brush size; shift+wheel: feather; Enter: heal   "
+                f"wheel: brush size; shift+wheel: feather; {key}+Enter: heal   "
         msg_size = self.statusbar.GetTextExtent(msg)
         self.statusbar.SetFieldsCount(2, [-1, msg_size.width])
         self.statusbar.SetStatusText("Ready")
@@ -438,11 +440,12 @@ class MainFrame(wx.Frame):
             wx.ID_ANY, "Zoom Fit", svg('magnifier-fit.svg'),
             shortHelp="Zoom to fit")
         tb_heal = tb_clear = None
+        heal_key = "Cmd+Enter" if wx.Platform == '__WXMAC__' else "Ctrl+Enter"
         if mode == 'heal':
             toolbar.AddSeparator()
             tb_heal = toolbar.AddTool(
                 wx.ID_ANY, "Heal", svg('heal.svg'),
-                shortHelp="Heal the painted areas (Enter)")
+                shortHelp=f"Heal the painted areas ({heal_key})")
             tb_clear = toolbar.AddTool(
                 wx.ID_ANY, "Clear strokes", svg('brush-clear.svg'),
                 shortHelp="Remove the painted areas (Esc)")
@@ -471,6 +474,10 @@ class MainFrame(wx.Frame):
         ]
         if mode == 'heal':
             accel_entries += [
+                wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_RETURN,
+                                    tb_heal.GetId()),
+                wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER,
+                                    tb_heal.GetId()),
                 wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_ESCAPE,
                                     tb_clear.GetId()),
             ]
@@ -545,22 +552,10 @@ class MainFrame(wx.Frame):
             self.spin_radius.SetValue(self.engine.radius)
         panel.refresh_brush()
 
-    @staticmethod
-    def _typing():
-        """True if the keyboard focus is in a text field."""
-        w = wx.Window.FindFocus()
-        while w is not None:
-            if isinstance(w, (wx.TextCtrl, wx.SpinCtrlDouble)):
-                return True
-            w = w.GetParent()
-        return False
-
     def on_char_hook(self, event):
         k = event.GetKeyCode()
         if k in (ord('['), ord(']')):
             self.adjust_brush(k == ord(']'), event.ShiftDown())
-        elif k in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and not self._typing():
-            self.on_heal(None)
         else:
             event.Skip()
 
@@ -630,7 +625,7 @@ class MainFrame(wx.Frame):
                 "No mask to save" if self.mode == 'mask'
                 else "No image to save")
             return True
-        dd = str(self.filename.parent)
+        dd = self.outdir or str(self.filename.parent)
         if self.mode == 'mask':
             title = "Save Mask"
             df = str(self.filename.stem + "_mask.png")
@@ -775,7 +770,7 @@ class MainFrame(wx.Frame):
 # end of class MainFrame
 
 
-def main(conf, filename=None, mode='mask'):
+def main(conf, filename=None, mode='mask', outdir=None):
     app = wx.PyApp() if wx.Platform == '__WXMAC__' else wx.App()
     fn = config.Config.get_config_file()
     if not os.path.exists(fn):
@@ -792,7 +787,7 @@ def main(conf, filename=None, mode='mask'):
             else:
                 import engine
                 eng = engine.AIMaskingEngine(conf)
-            frame = MainFrame(conf, eng, mode)
+            frame = MainFrame(conf, eng, mode, outdir)
             def fixgeom():
                 x, y = frame.GetPosition()
                 w, h = frame.GetSize()

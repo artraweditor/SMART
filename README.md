@@ -73,6 +73,9 @@ explicitly with `SMART --download-heal-model onnx` or
 
 ## Usage
 
+By default the save dialog starts in the directory of the input image;
+use `--outdir DIR` to start it in another directory.
+
 ### AI masking
 
 Start SMART with `SMART [image]`. Build a mask for the image by adding
@@ -86,8 +89,9 @@ Start SMART with `SMART --mode heal [image]`. Paint over the areas to
 heal with *shift+left drag* (*shift+right drag* erases). The mouse wheel
 changes the brush radius, and *shift+wheel* the feather (`[` and `]` do
 the same as the wheel, with and without shift); radius (in image pixels),
-feather and opacity can also be set in the toolbar. Then press *Enter*
-(or the *Heal* button) and save the result. Zoom with the toolbar buttons
+feather and opacity can also be set in the toolbar. Then press
+*Cmd+Enter* on macOS or *Ctrl+Enter* elsewhere (or the *Heal* button) and
+save the result. Zoom with the toolbar buttons
 or *ctrl+plus* and *ctrl+minus*.
 
 Linear float32 TIFF files are read and written without clipping, and

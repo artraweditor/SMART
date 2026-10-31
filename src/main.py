@@ -23,9 +23,17 @@ def getopts():
                    help='download a SAM2.1 checkpoint for the masking mode '
                    f'({", ".join(config.MASK_MODELS)}; larger is better '
                    'but slower) and exit')
+    p.add_argument('--outdir', metavar='DIR',
+                   help='default directory for the save dialog (default: '
+                   'the directory of the input image)')
     p.add_argument('input_file', nargs='?',
                    help='input image')
-    return p.parse_args()
+    opts = p.parse_args()
+    if opts.outdir is not None:
+        opts.outdir = os.path.abspath(os.path.expanduser(opts.outdir))
+        if not os.path.isdir(opts.outdir):
+            p.error(f'--outdir: not a directory: {opts.outdir}')
+    return opts
 
 
 def download(url, dest, size, sha):
@@ -103,7 +111,7 @@ def main():
             conf.save()
             os.unlink(legacy_fn)
         import gui
-        gui.main(conf, opts.input_file, opts.mode)
+        gui.main(conf, opts.input_file, opts.mode, opts.outdir)
 
 
 if __name__ == '__main__':
