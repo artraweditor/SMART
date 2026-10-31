@@ -1,4 +1,9 @@
 wxPython
 pillow>=11.3.0
 platformdirs
+numpy
+scipy
+tifffile
+imagecodecs
+onnxruntime
 git+https://github.com/facebookresearch/sam2.git

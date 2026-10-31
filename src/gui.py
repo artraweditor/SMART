@@ -1,111 +1,282 @@
 import wx
 import os
 from pathlib import Path
+import numpy as np
 from PIL import Image
 
 import config
-import engine
+
+CACHE_BELOW = 0.5   # below this zoom a scaled copy of the image is cached
+
 
 class ImagePanel(wx.Panel):
-    def __init__(self, parent, engine):
+    def __init__(self, parent, engine, mode='mask'):
         super().__init__(parent)
-        self.image = None
-        self.bitmap = None
+        self.mode = mode
+        self.image = None       # uint8 HxWx3 (the engine's displayed image)
+        self._pil = None        # PIL view sharing the buffer of self.image
+        self._cache = None      # scaled copy of the image, for small zooms
+        self._cache_key = None
         self.zoom = 1.0
         self.offset_x = 0
         self.offset_y = 0
         self.dragging = False
+        self.painting = False
+        self.input_enabled = True
         self.drag_start = (0, 0)
+        self.mouse = None       # last mouse position (screen), heal mode
         self.engine = engine
 
         self.Bind(wx.EVT_PAINT, self.on_paint)
+        self.Bind(wx.EVT_ERASE_BACKGROUND, lambda e: None)
         self.Bind(wx.EVT_LEFT_DOWN, self.on_left_down)
         self.Bind(wx.EVT_LEFT_UP, self.on_left_up)
         self.Bind(wx.EVT_RIGHT_DOWN, self.on_right_down)
+        self.Bind(wx.EVT_RIGHT_UP, self.on_right_up)
         self.Bind(wx.EVT_MOTION, self.on_motion)
+        self.Bind(wx.EVT_LEAVE_WINDOW, self.on_leave)
         self.Bind(wx.EVT_MOUSEWHEEL, self.on_mousewheel)
+        self.SetBackgroundStyle(wx.BG_STYLE_PAINT)
         self.SetBackgroundColour(
             wx.Colour(*self.engine.conf.background_color))
+        if self.mode == 'heal':
+            self.SetCursor(wx.Cursor(wx.CURSOR_BLANK))
+
+    # ------------------------------------------------------------ image
+    def set_image(self, arr):
+        """Use `arr` (uint8 HxWx3) as the displayed image."""
+        self.image = arr
+        self._cache = None
+        self._cache_key = None
+        if arr is not None:
+            h, w = arr.shape[:2]
+            arr = np.ascontiguousarray(arr)
+            self.image = arr
+            # NOTE: Pillow copies the buffer, so the engine's in-place
+            # updates must be copied over with _sync_pil()
+            self._pil = Image.fromarray(arr)
+        else:
+            self._pil = None
+
+    def _sync_pil(self, box):
+        """Copy the changed region of self.image into the PIL view."""
+        w, h = self.img_size()
+        x0, y0, x1, y1 = box
+        x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, w), min(y1, h)
+        if x1 <= x0 or y1 <= y0:
+            return
+        part = np.ascontiguousarray(self.image[y0:y1, x0:x1])
+        self._pil.paste(Image.fromarray(part), (x0, y0))
+
+    def img_size(self):
+        if self.image is None:
+            return 0, 0
+        h, w = self.image.shape[:2]
+        return w, h
 
     def load_image(self, path):
         self.engine.load_image(path)
-        self.image = self.engine.displayed_image
-        self.update_bitmap()
+        self.set_image(self.engine.displayed_image)
         self.center_image()
         self.zoom_fit()
 
-    def update_bitmap(self):
-        if self.image is not None:
-            h, w = self.image.shape[:2]
-            wx_image = wx.Image(w, h)
-            wx_image.SetData(self.image.tobytes())
-            self.bitmap = wx.Bitmap(wx_image)
-        else:
-            self.bitmap = None
+    def has_image(self):
+        return self.image is not None
 
     def center_image(self):
-        if self.bitmap:
+        if self.has_image():
             panel_w, panel_h = self.GetSize()
-            img_w = int(self.bitmap.GetWidth() * self.zoom)
-            img_h = int(self.bitmap.GetHeight() * self.zoom)
-            self.offset_x = (panel_w - img_w) // 2
-            self.offset_y = (panel_h - img_h) // 2
+            w, h = self.img_size()
+            self.offset_x = (panel_w - int(w * self.zoom)) // 2
+            self.offset_y = (panel_h - int(h * self.zoom)) // 2
 
+    def _dest_size(self):
+        w, h = self.img_size()
+        return max(1, int(w * self.zoom)), max(1, int(h * self.zoom))
+
+    def _ensure_cache(self):
+        dw, dh = self._dest_size()
+        if self._cache is None or self._cache_key != (dw, dh):
+            self._cache = np.asarray(
+                self._pil.resize((dw, dh), Image.BOX)).copy()
+            self._cache_key = (dw, dh)
+
+    def _update_cache(self, box):
+        """Recompute the cached scaled copy inside the image box."""
+        if self._cache is None:
+            return
+        w, h = self.img_size()
+        dw, dh = self._cache_key
+        fx, fy = w / dw, h / dh
+        x0, y0, x1, y1 = box
+        dx0, dy0 = max(int(x0 / fx) - 1, 0), max(int(y0 / fy) - 1, 0)
+        dx1, dy1 = min(int(np.ceil(x1 / fx)) + 1, dw), \
+            min(int(np.ceil(y1 / fy)) + 1, dh)
+        if dx1 <= dx0 or dy1 <= dy0:
+            return
+        part = self._pil.resize((dx1 - dx0, dy1 - dy0), Image.BOX,
+                                box=(dx0 * fx, dy0 * fy,
+                                     min(dx1 * fx, w), min(dy1 * fy, h)))
+        self._cache[dy0:dy1, dx0:dx1] = np.asarray(part)
+
+    def _render(self, rx, ry, rw, rh):
+        """RGB bytes of the screen rectangle (rx, ry, rw, rh), clipped to the
+        image: returns (x, y, w, h, buffer) or None."""
+        ox, oy = int(self.offset_x), int(self.offset_y)
+        dw, dh = self._dest_size()
+        x0, y0 = max(rx, ox), max(ry, oy)
+        x1, y1 = min(rx + rw, ox + dw), min(ry + rh, oy + dh)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        if self.zoom < CACHE_BELOW:
+            self._ensure_cache()
+            part = self._cache[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+        else:
+            w, h = self.img_size()
+            fx, fy = w / dw, h / dh
+            box = ((x0 - ox) * fx, (y0 - oy) * fy,
+                   (x1 - ox) * fx, (y1 - oy) * fy)
+            method = Image.NEAREST if self.zoom >= 2 else Image.BILINEAR
+            part = np.asarray(self._pil.resize((x1 - x0, y1 - y0), method,
+                                               box=box))
+        return x0, y0, x1 - x0, y1 - y0, np.ascontiguousarray(part)
+
+    def refresh_image_box(self, box=None):
+        """The image changed inside `box` (x0, y0, x1, y1; None: all)."""
+        if self.image is None:
+            return
+        if box is None:
+            w, h = self.img_size()
+            box = (0, 0, w, h)
+        self._sync_pil(box)
+        if self.zoom < CACHE_BELOW and self._cache is not None:
+            self._update_cache(box)
+        x0, y0 = self.to_screen_coords(box[0], box[1])
+        x1, y1 = self.to_screen_coords(box[2], box[3])
+        self.RefreshRect(wx.Rect(x0 - 2, y0 - 2, x1 - x0 + 5, y1 - y0 + 5))
+
+    # ------------------------------------------------------------ painting
     def on_paint(self, event):
         dc = wx.BufferedPaintDC(self)
+        rect = self.GetUpdateRegion().GetBox()
+        if rect.IsEmpty():
+            rect = wx.Rect(self.GetClientSize())
+        dc.SetClippingRegion(rect)
         dc.Clear()
-        if self.bitmap:
-            w = int(self.bitmap.GetWidth() * self.zoom)
-            h = int(self.bitmap.GetHeight() * self.zoom)
-            scaled = self.bitmap.ConvertToImage().Scale(w, h,
-                                                        wx.IMAGE_QUALITY_HIGH)
-            bmp = wx.Bitmap(scaled)
-            x = int(self.offset_x)
-            y = int(self.offset_y)
-            dc.DrawBitmap(bmp, x, y, True)
+        if self.has_image():
+            r = self._render(rect.x, rect.y, rect.width, rect.height)
+            if r is not None:
+                x, y, w, h, buf = r
+                bmp = wx.Bitmap.FromBuffer(w, h, buf)
+                dc.DrawBitmap(bmp, x, y, False)
+            if self.mode == 'mask':
+                dc.SetPen(wx.Pen(wx.Colour(0, 0, 0), width=1))
+                radius = 4
+                colors = [wx.Colour(255, 0, 0), wx.Colour(0, 255, 0)]
+                for p, b in zip(self.engine.points, self.engine.labels):
+                    sx, sy = self.to_screen_coords(p[0], p[1])
+                    dc.SetBrush(wx.Brush(colors[b], wx.BRUSHSTYLE_SOLID))
+                    dc.DrawCircle(sx, sy, radius)
+            elif self.mouse is not None and self.input_enabled:
+                self._draw_brush(dc)
 
-            dc.SetPen(wx.Pen(wx.Colour(0, 0, 0), width=1))
-            radius = 4
-            colors = [wx.Colour(255, 0, 0), wx.Colour(0, 255, 0)]
-            for p, b in zip(self.engine.points, self.engine.labels):
-                sx, sy = self.to_screen_coords(p[0], p[1])
-                dc.SetBrush(wx.Brush(colors[b], wx.BRUSHSTYLE_SOLID))
-                dc.DrawCircle(sx, sy, radius)
+    def _brush_radii(self):
+        r = self.engine.radius * self.zoom
+        return r, r * max(1.0 - self.engine.feather, 0.02)
 
+    def _draw_brush(self, dc):
+        x, y = self.mouse
+        outer, inner = self._brush_radii()
+        dc.SetBrush(wx.TRANSPARENT_BRUSH)
+        for rad in (outer, inner):
+            dc.SetPen(wx.Pen(wx.Colour(0, 0, 0), 3))
+            dc.DrawCircle(x, y, int(round(rad)))
+            dc.SetPen(wx.Pen(wx.Colour(255, 255, 255), 1))
+            dc.DrawCircle(x, y, int(round(rad)))
+
+    def refresh_brush(self, pos=None):
+        """Repaint the area of the brush cursor at `pos` (default: current)."""
+        pos = pos or self.mouse
+        if pos is None:
+            return
+        r = int(self._brush_radii()[0]) + 4
+        self.RefreshRect(wx.Rect(pos[0] - r, pos[1] - r, 2 * r + 1, 2 * r + 1))
+
+    # ------------------------------------------------------------ events
     def _panning(self):
         return not wx.GetKeyState(wx.WXK_SHIFT)
 
+    def _paint_to(self, event):
+        x, y = self.to_image_coords_f(event.GetX(), event.GetY())
+        box = self.engine.stroke_to(x, y)
+        if box is not None:
+            self.refresh_image_box(box)
+
+    def _start_painting(self, event, erase):
+        self.engine.begin_stroke(erase)
+        self.painting = True
+        if not self.HasCapture():
+            self.CaptureMouse()
+        self._paint_to(event)
+
+    def _stop_painting(self):
+        if self.painting:
+            self.painting = False
+            if self.HasCapture():
+                self.ReleaseMouse()
+            box = self.engine.end_stroke()
+            if box is not None:
+                self.refresh_image_box(box)
+
     def on_left_down(self, event):
-        if self.image is not None:
-            if self._panning():
-                self.dragging = True
-                self.drag_start = (event.GetX(), event.GetY())
-                self.CaptureMouse()
-            else:
-                self.engine.add_point(
-                    self.to_image_coords(event.GetX(), event.GetY()), True)
-                self.image = self.engine.displayed_image
-                self.update_bitmap()
-                self.Refresh()
+        if self.image is None or not self.input_enabled:
+            return
+        if self._panning():
+            self.dragging = True
+            self.drag_start = (event.GetX(), event.GetY())
+            self.CaptureMouse()
+        elif self.mode == 'heal':
+            self._start_painting(event, False)
+        else:
+            self.engine.add_point(
+                self.to_image_coords(event.GetX(), event.GetY()), True)
+            self.set_image(self.engine.displayed_image)
+            self.Refresh()
 
     def on_left_up(self, event):
-        if self.image is not None and self.dragging:
+        if self.painting:
+            self._stop_painting()
+        elif self.image is not None and self.dragging:
             self.dragging = False
-            #self.center_image()
             if self.HasCapture():
                 self.ReleaseMouse()
             self.Refresh()
 
     def on_right_down(self, event):
-        if self.image is not None and not self._panning():
+        if self.image is None or not self.input_enabled or self._panning():
+            return
+        if self.mode == 'heal':
+            self._start_painting(event, True)
+        else:
             self.engine.add_point(
                 self.to_image_coords(event.GetX(), event.GetY()), False)
-            self.image = self.engine.displayed_image
-            self.update_bitmap()
+            self.set_image(self.engine.displayed_image)
             self.Refresh()
-            
+
+    def on_right_up(self, event):
+        if self.painting:
+            self._stop_painting()
+
     def on_motion(self, event):
-        if self.dragging and event.Dragging() and event.LeftIsDown():
+        if self.mode == 'heal' and self.has_image():
+            old = self.mouse
+            self.mouse = (event.GetX(), event.GetY())
+            if old is not None:
+                self.refresh_brush(old)
+            self.refresh_brush()
+        if self.painting and (event.LeftIsDown() or event.RightIsDown()):
+            self._paint_to(event)
+        elif self.dragging and event.Dragging() and event.LeftIsDown():
             dx = event.GetX() - self.drag_start[0]
             dy = event.GetY() - self.drag_start[1]
             self.offset_x += dx
@@ -113,8 +284,19 @@ class ImagePanel(wx.Panel):
             self.drag_start = (event.GetX(), event.GetY())
             self.Refresh()
 
+    def on_leave(self, event):
+        if self.mode == 'heal' and self.mouse is not None:
+            old, self.mouse = self.mouse, None
+            self.refresh_brush(old)
+
     def on_mousewheel(self, event):
         rotation = event.GetWheelRotation()
+        if self.mode == 'heal':
+            # wheel: brush size; shift+wheel: feather (on macOS a shifted
+            # wheel can come as a horizontal scroll: either axis is fine)
+            if rotation and self.input_enabled:
+                self.GetParent().adjust_brush(rotation > 0, event.ShiftDown())
+            return
         if rotation > 0:
             self.zoom *= 1.1
         else:
@@ -138,9 +320,9 @@ class ImagePanel(wx.Panel):
         self.Refresh()
 
     def zoom_fit(self, event=None):
-        if self.bitmap:
+        if self.has_image():
             panel_w, panel_h = self.GetSize()
-            img_w, img_h = self.bitmap.GetWidth(), self.bitmap.GetHeight()
+            img_w, img_h = self.img_size()
             scale_w = panel_w / img_w
             scale_h = panel_h / img_h
             self.zoom = min(scale_w, scale_h)
@@ -150,41 +332,40 @@ class ImagePanel(wx.Panel):
 
     def reset(self, clear_image=False):
         self.engine.reset(clear_image)
-        self.image = self.engine.displayed_image
-        self.update_bitmap()
+        self.set_image(self.engine.displayed_image)
         self.Refresh()
 
     def undo(self):
         self.engine.undo_last()
-        self.image = self.engine.displayed_image
-        self.update_bitmap()
-        self.Refresh()        
+        self.set_image(self.engine.displayed_image)
+        self.Refresh()
+
+    # ------------------------------------------------------------ coords
+    def to_image_coords_f(self, x, y):
+        w, h = self._dest_size()
+        real_w, real_h = self.engine.get_size()
+        return ((x - int(self.offset_x)) * real_w / w,
+                (y - int(self.offset_y)) * real_h / h)
 
     def to_image_coords(self, x, y):
-        w = self.bitmap.GetWidth() * self.zoom
-        h = self.bitmap.GetHeight() * self.zoom
-        real_w, real_h = self.engine.get_size()
-        scale_w = real_w / w
-        scale_h = real_h / h
-        return (int(round((x - self.offset_x) * scale_w)),
-                int(round((y - self.offset_y) * scale_h)))
+        fx, fy = self.to_image_coords_f(x, y)
+        return int(round(fx)), int(round(fy))
 
     def to_screen_coords(self, x, y):
-        w = self.bitmap.GetWidth() * self.zoom
-        h = self.bitmap.GetHeight() * self.zoom
+        w, h = self._dest_size()
         real_w, real_h = self.engine.get_size()
-        scale_w = real_w / w
-        scale_h = real_h / h
-        return (int(round(x / scale_w + self.offset_x)),
-                int(round(y / scale_h + self.offset_y)))
+        return (int(round(x * w / real_w + int(self.offset_x))),
+                int(round(y * h / real_h + int(self.offset_y))))
 
 # end of class ImagePanel
 
 
 class MainFrame(wx.Frame):
-    def __init__(self, conf, engine):
-        super().__init__(None, title="SMART AI mask builder - v" +
-                         config.version,
+    def __init__(self, conf, engine, mode='mask'):
+        self.mode = mode
+        title = "SMART AI mask builder" if mode == 'mask' \
+            else "SMART AI healing"
+        super().__init__(None, title=title + " - v" + config.version,
                          size=conf.window_size)
 
         icon_path = \
@@ -195,10 +376,15 @@ class MainFrame(wx.Frame):
 
         self.engine = engine
         self.filename = None
+        self.busy_cursor = None
 
         self.statusbar = self.CreateStatusBar()
-        msg = "shift+left click: add positive point; " \
-            "shift+right click: add negative point   "
+        if mode == 'mask':
+            msg = "shift+left click: add positive point; " \
+                "shift+right click: add negative point   "
+        else:
+            msg = "shift+left drag: paint; shift+right drag: erase; " \
+                "wheel: brush size; shift+wheel: feather; Enter: heal   "
         msg_size = self.statusbar.GetTextExtent(msg)
         self.statusbar.SetFieldsCount(2, [-1, msg_size.width])
         self.statusbar.SetStatusText("Ready")
@@ -213,6 +399,7 @@ class MainFrame(wx.Frame):
 
         # Toolbar
         toolbar = self.CreateToolBar()
+        self.toolbar = toolbar
         bg = toolbar.GetBackgroundColour()
         l = bg[0]/255.0 * 0.213 + bg[1]/255.0 * 0.715 + bg[2]/255.0 * 0.072
         repl = b'#ffffff' if l < 0.5 else b'#000000'
@@ -223,18 +410,21 @@ class MainFrame(wx.Frame):
                 data = f.read().replace(b'#2a7fff', repl)
                 return wx.BitmapBundle.FromSVG(data, sz)
 
+        what = "mask" if mode == 'mask' else "image"
         tb_open = toolbar.AddTool(
             wx.ID_OPEN, "Open", svg('folder-open.svg'),
             shortHelp="Open image...")
         tb_save = toolbar.AddTool(
             wx.ID_SAVE, "Save", svg('save.svg'),
-            shortHelp="Save mask...")
+            shortHelp=f"Save {what}...")
         tb_reset = toolbar.AddTool(
             wx.ID_ANY, "Reset", svg('undo-all.svg'),
-            shortHelp="Remove all points")
+            shortHelp="Remove all points" if mode == 'mask'
+            else "Revert to the image as loaded")
         tb_undo = toolbar.AddTool(
             wx.ID_ANY, "Undo", svg('undo.svg'),
-            shortHelp="Remove last added point")
+            shortHelp="Remove last added point" if mode == 'mask'
+            else "Undo last stroke or healing")
         tb_zoom_in = toolbar.AddTool(
             wx.ID_ZOOM_IN, "Zoom In", svg('magnifier-plus.svg'),
             shortHelp="Zoom in")
@@ -247,6 +437,25 @@ class MainFrame(wx.Frame):
         tb_zoom_fit = toolbar.AddTool(
             wx.ID_ANY, "Zoom Fit", svg('magnifier-fit.svg'),
             shortHelp="Zoom to fit")
+        tb_heal = tb_clear = None
+        if mode == 'heal':
+            toolbar.AddSeparator()
+            tb_heal = toolbar.AddTool(
+                wx.ID_ANY, "Heal", svg('heal.svg'),
+                shortHelp="Heal the painted areas (Enter)")
+            tb_clear = toolbar.AddTool(
+                wx.ID_ANY, "Clear strokes", svg('brush-clear.svg'),
+                shortHelp="Remove the painted areas (Esc)")
+            toolbar.AddSeparator()
+            self.spin_radius = self._add_spin(
+                toolbar, "Radius", engine.radius, 1, 2000, 1, 0)
+            self.spin_feather = self._add_spin(
+                toolbar, "Feather", engine.feather, 0, 1, 0.05, 2)
+            self.spin_opacity = self._add_spin(
+                toolbar, "Opacity", engine.opacity, 0.01, 1, 0.05, 2)
+            self.Bind(wx.EVT_SPINCTRLDOUBLE, self.on_brush_changed)
+            self.Bind(wx.EVT_TEXT_ENTER, self.on_brush_changed)
+            self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
         toolbar.Realize()
 
         accel_entries = [
@@ -260,6 +469,11 @@ class MainFrame(wx.Frame):
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('1'), tb_zoom_1_1.GetId()),
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('f'), tb_zoom_fit.GetId()),
         ]
+        if mode == 'heal':
+            accel_entries += [
+                wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_ESCAPE,
+                                    tb_clear.GetId()),
+            ]
         accel_table = wx.AcceleratorTable(accel_entries)
         self.SetAcceleratorTable(accel_table)
 
@@ -280,24 +494,85 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_TOOL, self.on_save, tb_save)
         self.Bind(wx.EVT_TOOL, self.on_reset, tb_reset)
         self.Bind(wx.EVT_TOOL, self.on_undo, tb_undo)
+        if mode == 'heal':
+            for ev in (wx.EVT_MENU, wx.EVT_TOOL):
+                self.Bind(ev, self.on_heal, tb_heal)
+                self.Bind(ev, self.on_clear_strokes, tb_clear)
 
         self.Bind(wx.EVT_MENU, self.on_close, id=wx.ID_EXIT)
         self.Bind(wx.EVT_CLOSE, self.on_close)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.image_panel = ImagePanel(self, engine)
+        self.image_panel = ImagePanel(self, engine, mode)
         hbox.Add(self.image_panel, proportion=1, flag=wx.EXPAND)
 
         vbox.Add(hbox, proportion=1, flag=wx.EXPAND)
         self.SetSizer(vbox)
         self.Raise()
 
+    # ------------------------------------------------------------ brush UI
+    def _add_spin(self, toolbar, label, value, lo, hi, inc, digits):
+        toolbar.AddControl(wx.StaticText(toolbar, label=f" {label} "))
+        sc = wx.SpinCtrlDouble(toolbar, value=str(value), min=lo, max=hi,
+                               inc=inc, size=wx.Size(80, -1),
+                               style=wx.TE_PROCESS_ENTER)
+        sc.SetDigits(digits)
+        sc.SetValue(value)
+        toolbar.AddControl(sc)
+        return sc
+
+    def on_brush_changed(self, event):
+        e = self.engine
+        e.radius = self.spin_radius.GetValue()
+        e.feather = self.spin_feather.GetValue()
+        e.opacity = self.spin_opacity.GetValue()
+        self.image_panel.refresh_brush()
+        self.image_panel.SetFocus()
+        event.Skip()
+
+    def adjust_brush(self, up, feather):
+        """Make the brush bigger/smaller (or, with `feather`, more/less
+        feathered), keeping the toolbar controls in sync."""
+        panel = self.image_panel
+        panel.refresh_brush()
+        if feather:
+            f = self.engine.feather + (0.05 if up else -0.05)
+            self.engine.feather = min(max(f, 0.0), 1.0)
+            self.spin_feather.SetValue(self.engine.feather)
+        else:
+            r = self.engine.radius * (1.2 if up else 1 / 1.2)
+            self.engine.radius = min(max(r, 1.0), 2000.0)
+            self.spin_radius.SetValue(self.engine.radius)
+        panel.refresh_brush()
+
+    @staticmethod
+    def _typing():
+        """True if the keyboard focus is in a text field."""
+        w = wx.Window.FindFocus()
+        while w is not None:
+            if isinstance(w, (wx.TextCtrl, wx.SpinCtrlDouble)):
+                return True
+            w = w.GetParent()
+        return False
+
+    def on_char_hook(self, event):
+        k = event.GetKeyCode()
+        if k in (ord('['), ord(']')):
+            self.adjust_brush(k == ord(']'), event.ShiftDown())
+        elif k in (wx.WXK_RETURN, wx.WXK_NUMPAD_ENTER) and not self._typing():
+            self.on_heal(None)
+        else:
+            event.Skip()
+
+    # ------------------------------------------------------------ files
     def check_save(self):
         if self.engine.saved:
             return True
+        what = "mask" if self.mode == 'mask' else "image"
         with wx.MessageDialog(self,
                               "You have unsaved changes. "
-                              "Do you want to save the mask before continuing?",
+                              f"Do you want to save the {what} "
+                              "before continuing?",
                               "Unsaved Changes",
                               wx.YES_NO | wx.CANCEL | wx.ICON_QUESTION) as dlg:
             result = dlg.ShowModal()
@@ -309,6 +584,8 @@ class MainFrame(wx.Frame):
             return False
 
     def on_open_image(self, event):
+        if self.engine.busy_now():
+            return
         if not self.check_save():
             return
         with wx.FileDialog(
@@ -333,7 +610,7 @@ class MainFrame(wx.Frame):
             self.image_panel.reset(True)
             wx.MessageDialog(self, f"Error loading image:\n{e}",
                              "Load Error",
-                             wx.OK | wx.ICON_ERROR).ShowModal()        
+                             wx.OK | wx.ICON_ERROR).ShowModal()
 
     def panel_zoom_in(self, event):
         self.image_panel.zoom_in()
@@ -349,41 +626,132 @@ class MainFrame(wx.Frame):
 
     def save_mask(self):
         if self.filename is None:
-            self.statusbar.SetStatusText("No mask to save")
+            self.statusbar.SetStatusText(
+                "No mask to save" if self.mode == 'mask'
+                else "No image to save")
             return True
         dd = str(self.filename.parent)
-        df = str(self.filename.stem + "_mask.png")
+        if self.mode == 'mask':
+            title = "Save Mask"
+            df = str(self.filename.stem + "_mask.png")
+            wildcard = "PNG files (*.png)|*.png|All files (*.*)|*.*"
+        else:
+            title = "Save Image"
+            ext = self.filename.suffix or '.tif'
+            df = str(self.filename.stem + "_healed" + ext)
+            e = ext.lower().lstrip('.')
+            kinds = {'tif': 'TIFF files (*.tif;*.tiff)|*.tif;*.tiff',
+                     'tiff': 'TIFF files (*.tif;*.tiff)|*.tif;*.tiff',
+                     'png': 'PNG files (*.png)|*.png',
+                     'jpg': 'JPEG files (*.jpg;*.jpeg)|*.jpg;*.jpeg',
+                     'jpeg': 'JPEG files (*.jpg;*.jpeg)|*.jpg;*.jpeg'}
+            wildcard = kinds.get(e, kinds['tif']) + "|All files (*.*)|*.*"
         # NOTE: wxWidgets 3.2.9 on macOS asserts (index out of bounds) in
         # FileDialog.ShowModal() with FD_SAVE and a single wildcard filter,
         # so we add a second one as a workaround
-        with wx.FileDialog(self, "Save Mask",
-                           wildcard="PNG files (*.png)|*.png|"
-                           "All files (*.*)|*.*",
+        with wx.FileDialog(self, title,
+                           wildcard=wildcard,
                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
                            defaultDir=dd, defaultFile=df) as fd:
             if fd.ShowModal() == wx.ID_CANCEL:
                 return True
             path = fd.GetPath()
             try:
-                self.engine.save_mask(path)
-                self.statusbar.SetStatusText(f"mask saved to {path}")
+                if self.mode == 'mask':
+                    self.engine.save_mask(path)
+                    self.statusbar.SetStatusText(f"mask saved to {path}")
+                else:
+                    self.engine.save_image(path)
+                    self.statusbar.SetStatusText(f"image saved to {path}")
                 return True
             except Exception as e:
-                wx.MessageDialog(self, f"Error saving mask:\n{e}",
+                wx.MessageDialog(self, f"Error saving "
+                                 f"{'mask' if self.mode == 'mask' else 'image'}"
+                                 f":\n{e}",
                                  "Save Error",
                                  wx.OK | wx.ICON_ERROR).ShowModal()
                 return False
 
     def on_save(self, event):
+        if self.engine.busy_now():
+            return
         self.save_mask()
 
     def on_reset(self, event):
+        if self.engine.busy_now():
+            return
+        if self.mode == 'heal' and self.engine.history:
+            with wx.MessageDialog(self, "Revert the image to how it was when "
+                                  "loaded, discarding all changes?",
+                                  "Revert", wx.OK | wx.CANCEL |
+                                  wx.ICON_QUESTION) as dlg:
+                if dlg.ShowModal() != wx.ID_OK:
+                    return
         self.image_panel.reset()
 
     def on_undo(self, event):
+        if self.engine.busy_now():
+            return
         self.image_panel.undo()
 
+    # ------------------------------------------------------------ healing
+    def on_clear_strokes(self, event):
+        box = self.engine.clear_strokes()
+        if box is not None:
+            self.image_panel.refresh_image_box(box)
+
+    def _set_busy(self, busy):
+        self.image_panel.input_enabled = not busy
+        for tool in range(self.toolbar.GetToolsCount()):
+            t = self.toolbar.GetToolByPos(tool)
+            if t.IsButton():
+                self.toolbar.EnableTool(t.GetId(), not busy)
+        if busy:
+            self.busy_cursor = wx.BusyCursor()
+        else:
+            self.busy_cursor = None
+            if self.mode == 'heal':
+                self.image_panel.SetCursor(wx.Cursor(wx.CURSOR_BLANK))
+
+    def on_heal(self, event):
+        e = self.engine
+        if e.img is None:
+            return
+        if not e.has_cover():
+            self.statusbar.SetStatusText(
+                "Nothing to heal: paint over the image with shift+drag")
+            return
+        self._set_busy(True)
+        self.statusbar.SetStatusText(
+            "Healing... (the first run loads the model)")
+
+        def progress(k, n):
+            wx.CallAfter(self.statusbar.SetStatusText,
+                         f"Healing... area {min(k + 1, n)} of {n}")
+
+        if not e.heal_async(
+                lambda p, c: wx.CallAfter(self._heal_done, p, c),
+                lambda ex: wx.CallAfter(self._heal_failed, ex),
+                progress):
+            self._set_busy(False)
+
+    def _heal_done(self, patches, cover):
+        box = self.engine.apply_patches(patches, cover)
+        self._set_busy(False)
+        self.image_panel.refresh_image_box(box)
+        self.statusbar.SetStatusText("Healing done")
+
+    def _heal_failed(self, ex):
+        import traceback
+        traceback.print_exception(ex)
+        self._set_busy(False)
+        self.statusbar.SetStatusText("Healing failed")
+        wx.MessageDialog(self, f"Healing failed:\n{ex}", "Healing error",
+                         wx.OK | wx.ICON_ERROR).ShowModal()
+
     def on_close(self, event):
+        if self.engine.busy_now():
+            return
         if not self.check_save():
             return
         def update(cur, prev):
@@ -396,13 +764,18 @@ class MainFrame(wx.Frame):
             return (a, b)
         self.engine.conf.window_size = \
             update(self.GetSize(), self.engine.conf.window_size)
+        if self.mode == 'heal':
+            c = self.engine.conf
+            c.brush_radius = float(self.engine.radius)
+            c.brush_feather = float(self.engine.feather)
+            c.brush_opacity = float(self.engine.opacity)
         self.engine.conf.save()
         event.Skip()
 
 # end of class MainFrame
 
 
-def main(conf, filename=None):
+def main(conf, filename=None, mode='mask'):
     app = wx.PyApp() if wx.Platform == '__WXMAC__' else wx.App()
     fn = config.Config.get_config_file()
     if not os.path.exists(fn):
@@ -413,7 +786,13 @@ def main(conf, filename=None):
                          "Initial configuration", wx.OK).ShowModal()
     else:
         try:
-            frame = MainFrame(conf, engine.AIMaskingEngine(conf))
+            if mode == 'heal':
+                import heal_engine
+                eng = heal_engine.AIHealingEngine(conf)
+            else:
+                import engine
+                eng = engine.AIMaskingEngine(conf)
+            frame = MainFrame(conf, eng, mode)
             def fixgeom():
                 x, y = frame.GetPosition()
                 w, h = frame.GetSize()

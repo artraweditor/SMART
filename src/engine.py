@@ -7,12 +7,7 @@ import hashlib
 
 import numpy as np
 from PIL import Image, ImageCms
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
-import hydra
-from hydra.core.global_hydra import GlobalHydra
-if GlobalHydra.instance().is_initialized():
-    GlobalHydra.instance().clear()
+from engine_base import BaseEngine
 
 
 def checksum(filename):
@@ -20,9 +15,16 @@ def checksum(filename):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-class AIMaskingEngine:
+class AIMaskingEngine(BaseEngine):
     def __init__(self, conf):
-        self.conf = conf
+        # SAM2 is only needed in masking mode
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+        import hydra
+        from hydra.core.global_hydra import GlobalHydra
+        if GlobalHydra.instance().is_initialized():
+            GlobalHydra.instance().clear()
+        super().__init__(conf)
         sam2_checkpoint = self.conf.get_model_file()
         model_cfg_dir, model_cfg = self.conf.get_model_config()
         with hydra.initialize(version_base=None,
@@ -32,26 +34,11 @@ class AIMaskingEngine:
                                          device=self.conf.device)
             self.sam2_model.eval()
         self.predictor = SAM2ImagePredictor(self.sam2_model)
-        self.image_filename = None
         self.image = None
         self.mask = None
         self.mask_input = None
-        self.displayed_image = None
-        self.saved = True
-        self.size = -1, -1
         self.points = []
         self.labels = []
-        self.srgb_profile = ImageCms.createProfile('sRGB')
-        if self.conf.display_icc_profile:
-            display_profile = ImageCms.ImageCmsProfile(
-                self.conf.display_icc_profile)
-        else:
-            display_profile = ImageCms.get_display_profile()
-        if display_profile is not None:
-            self.display_xform = ImageCms.buildTransform(
-                self.srgb_profile, display_profile, "RGB", "RGB")
-        else:
-            self.display_xform = None
 
     def load_image(self, filename):
         self.reset(True)
@@ -97,9 +84,6 @@ class AIMaskingEngine:
                 pass
         doit(filename)
 
-    def get_size(self):
-        return self.size
-
     def add_point(self, point, is_positive):
         self.saved = False
         self.points.append(point)
@@ -144,14 +128,6 @@ class AIMaskingEngine:
         else:
             self.displayed_image = self.to_display(self.image)
 
-    def to_display(self, img):
-        ret = (img * 255).astype(np.uint8)
-        if self.display_xform is not None:
-            src = Image.fromarray(ret)
-            ImageCms.applyTransform(src, self.display_xform, True)
-            ret = np.array(src)
-        return ret
-            
     def undo_last(self):
         if self.points:
             self.points.pop()

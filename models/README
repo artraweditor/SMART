@@ -1,2 +1,8 @@
 models downloaded from https://github.com/facebookresearch/sam2
 should be put here, and the configuration file edited appropriately
+
+AI healing models (see `SMART --download-heal-model`) are also put here:
+ - big-lama-dynamic-fp32.onnx (onnx backend; LaMa big-lama export by
+   greycard, Apache-2.0, https://huggingface.co/jessolmstead/greycard-lama)
+ - big-lama.pt (torch backend, e.g. for Metal/"mps"; LaMa big-lama,
+   Apache-2.0, https://github.com/advimman/lama)
