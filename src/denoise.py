@@ -683,6 +683,7 @@ def save_result(path, res, raw, opts, exiftool=None):
     if path.lower().endswith(".dng"):
         dng.write_linear_dng(
             path, res.rgb, make=raw.make, model=raw.model,
+            unique=getattr(raw, 'unique', None),
             xyz_cam=raw.xyz_cam, neutral=raw.neutral,
             orientation=raw.orientation, bits=opts.dng_bits)
         return copy_exif(exiftool, raw.path, path)

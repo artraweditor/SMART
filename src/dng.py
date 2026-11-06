@@ -43,6 +43,7 @@ class MosaicDNG:
     xyz_cam: np.ndarray      # 3x3, XYZ (D65) -> camera RGB
     path: str
     iso: float | None = None
+    unique: str | None = None   # UniqueCameraModel
 
     kind = 'mosaic'
 
@@ -69,6 +70,7 @@ class LinearDNG:
     xyz_cam: np.ndarray
     path: str
     iso: float | None = None
+    unique: str | None = None   # UniqueCameraModel
 
     kind = 'linear'
 
@@ -155,7 +157,8 @@ def _metadata(tf, page):
         orientation=orientation if orientation in (3, 6, 8) else 1,
         make=_tag(page, 'Make'), model=_tag(page, 'Model'),
         xyz_cam=np.asarray(_color_matrix(page), np.float64),
-        neutral=neutral / neutral[1], iso=_iso(tf, page))
+        neutral=neutral / neutral[1], iso=_iso(tf, page),
+        unique=_tag(page, 'UniqueCameraModel'))
 
 
 def _white(data, page):
@@ -289,7 +292,7 @@ def _rational(x, den=10000):
 
 
 def write_linear_dng(path, rgb, *, make, model, xyz_cam, neutral,
-                     orientation=1, software="SMART", bits=16):
+                     orientation=1, software="SMART", bits=16, unique=None):
     """Write an HxWx3 float32 linear image as a LinearRaw DNG: 32-bit float
     (`bits=32`) or 16-bit unsigned integer (`bits=16`, white = 65535,
     negatives clipped).
@@ -303,7 +306,16 @@ def write_linear_dng(path, rgb, *, make, model, xyz_cam, neutral,
     else:
         rgb = np.ascontiguousarray(rgb, dtype="<f4")
     h, w, _ = rgb.shape
-    unique = f"{make} {model}".strip() if make else (model or "SMART")
+    if not unique:
+        # UniqueCameraModel is what the camera profiles are matched on, so
+        # it must not repeat the make when the model already includes it
+        # ("Canon Canon EOS-1D Mark III")
+        if not make:
+            unique = model or "SMART"
+        elif model and model.lower().startswith(make.lower()):
+            unique = model
+        else:
+            unique = f"{make} {model}".strip()
     e = [
         _entry(254, _LONG, [0]),
         _entry(256, _LONG, [w]),
