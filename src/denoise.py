@@ -148,6 +148,9 @@ def estimate_noise(x, rgb_idx):
 # ---------------------------------------------------------------------------
 # Tiled inference (greycard-ai `Denoiser::run`)
 
+TREENET_TILE = 256         # TreeNet models (linear DNGs): tile and overlap
+TREENET_OVERLAP = 64
+DEFAULT_ISO = 800          # if a linear DNG does not say
 DEFAULT_TILE = 1024
 DEFAULT_MARGIN = 96
 PLAUSIBLE = 3.0
@@ -291,7 +294,9 @@ def _check_plausible(packed, rgb, side, margin):
 # ONNX Runtime backend
 
 
-def make_runner(model_path, provider="auto", verbose=False, fixed_side=None):
+def _ort_sessions(model_path, provider, verbose, free_dims, tag):
+    """An onnxruntime session on the best provider available (`state`), and
+    `session_for(providers)` to rebuild it (e.g. on the CPU)."""
     import onnxruntime as ort
 
     avail = ort.get_available_providers()
@@ -329,7 +334,7 @@ def make_runner(model_path, provider="auto", verbose=False, fixed_side=None):
                 "ModelCacheDirectory": str(
                     config.Config.models_dir()
                     / "coreml-cache"
-                    / f"{Path(model_path).stem}-{fixed_side or 'dyn'}"
+                    / f"{Path(model_path).stem}-{tag}"
                 ),
             }
         return {}
@@ -337,34 +342,61 @@ def make_runner(model_path, provider="auto", verbose=False, fixed_side=None):
     def session_for(prov):
         so = ort.SessionOptions()
         so.log_severity_level = 0 if verbose else 3
-        if fixed_side:
-            # Accelerators want static shapes (greycard's CoreML session is
-            # fixed too).
-            for dim in ("h", "w"):
-                so.add_free_dimension_override_by_name(dim, fixed_side)
+        # Accelerators want static shapes (greycard's CoreML session is
+        # fixed too).
+        for dim, value in free_dims.items():
+            so.add_free_dimension_override_by_name(dim, value)
         return ort.InferenceSession(
             str(model_path), so, providers=[(p, options(p)) for p in prov]
         )
 
     state = {"prov": chain}
     state["sess"] = session_for(chain)
+    return state, session_for
+
+
+def _guarded(state, session_for, call):
+    """call(session), falling back to the CPU if an accelerator fails."""
+    try:
+        return call(state["sess"])
+    except Exception as e:  # a GPU provider that cannot run the model
+        if state["prov"] == ["CPUExecutionProvider"]:
+            raise
+        print(
+            f"{state['prov'][0]} failed ({str(e).splitlines()[0]}); "
+            "falling back to CPU",
+            file=sys.stderr,
+        )
+        state["prov"] = ["CPUExecutionProvider"]
+        state["sess"] = session_for(state["prov"])
+        return call(state["sess"])
+
+
+def make_runner(model_path, provider="auto", verbose=False, fixed_side=None):
+    state, session_for = _ort_sessions(
+        model_path, provider, verbose,
+        {"h": fixed_side, "w": fixed_side} if fixed_side else {},
+        fixed_side or "dyn")
 
     def run(packed):
-        try:
-            return state["sess"].run(["rgb"], {"packed": packed})[0]
-        except (
-            Exception
-        ) as e:  # a GPU provider that cannot run the model: use the CPU
-            if state["prov"] == ["CPUExecutionProvider"]:
-                raise
-            print(
-                f"{state['prov'][0]} failed ({str(e).splitlines()[0]}); "
-                "falling back to CPU",
-                file=sys.stderr,
-            )
-            state["prov"] = ["CPUExecutionProvider"]
-            state["sess"] = session_for(state["prov"])
-            return state["sess"].run(["rgb"], {"packed": packed})[0]
+        return _guarded(state, session_for,
+                        lambda s: s.run(["rgb"], {"packed": packed})[0])
+
+    run.state = state
+    return run
+
+
+def make_treenet_runner(model_path, provider="auto", verbose=False,
+                        tile=TREENET_TILE):
+    """A TreeNet model: run(float16 [1,3,T,T], float16 [1,1]) -> float16."""
+    state, session_for = _ort_sessions(
+        model_path, provider, verbose,
+        {"batch_size": 1, "height": tile, "width": tile}, f"tn{tile}")
+
+    def run(x, cond):
+        return _guarded(
+            state, session_for,
+            lambda s: s.run(["output"], {"input": x, "cond": cond})[0])
 
     run.state = state
     return run
@@ -417,11 +449,12 @@ class Cancelled(Exception):
 
 @dataclasses.dataclass
 class Options:
-    model: str = "balanced"          # a key of config.DENOISE_MODELS
-    model_file: str | None = None    # ONNX file overriding `model`
-    backend: str = "onnxruntime"     # or "torch"
+    model: str = "balanced"          # fast, balanced or best
+    model_file: str | None = None    # ONNX file overriding the model
+    backend: str = "onnxruntime"     # or "torch" (mosaic models only)
     provider: str = "auto"
     noise: tuple | None = None       # (aR, bR, aG, bG, aB, bB) or estimate
+    iso: float | None = None         # linear DNGs: override the file's ISO
     tile: int = DEFAULT_TILE
     margin: int = DEFAULT_MARGIN
     wb: str = "none"                 # TIFF output: "none" or "camera"
@@ -436,25 +469,32 @@ class Options:
             provider=conf.denoise_provider, tile=conf.denoise_tile,
             margin=conf.denoise_margin, dng_bits=conf.denoise_dng_bits, **kw)
 
-    def model_path(self):
+    def model_path(self, kind="mosaic"):
+        """The model file for this kind of DNG ('mosaic' or 'linear')."""
         if self.model_file:
             path = Path(self.model_file)
         else:
-            path = config.Config().get_denoise_model_file(self.model)
+            path = config.Config().get_denoise_model_file(self.model, kind)
         if not path.is_file():
             hint = "" if self.model_file else \
                 f" (run with --download-denoise-model {self.model})"
             raise ModelMissing(f"denoise model not found: {path}{hint}")
         return path
 
-    def runner_key(self):
-        return (str(self.model_path()), self.backend, self.provider,
+    def runner_key(self, kind="mosaic"):
+        return (str(self.model_path(kind)), self.backend, self.provider,
                 self.tile, self.margin)
 
 
-def make_run(opts):
-    """The network as a callable, for `denoise_mosaic`."""
-    path = opts.model_path()
+def make_run(opts, kind="mosaic"):
+    """The network as a callable (for `denoise_mosaic` or
+    `denoise_linear`) for this kind of DNG."""
+    path = opts.model_path(kind)
+    if kind == "linear":
+        if opts.backend == "torch":
+            raise ValueError("the torch backend is not available for "
+                             "linear DNG models")
+        return make_treenet_runner(path, opts.provider, opts.verbose)
     if opts.backend == "torch":
         return make_torch_runner(path, opts.provider)
     tile, margin = tiling(opts.tile, opts.margin)
@@ -469,10 +509,15 @@ class Result:
     noise_b: list
     model: str
     provider: str
+    iso: float | None = None         # linear DNGs: the ISO that was used
+    iso_guessed: bool = False
 
 
 def denoise_dng(raw, opts, run=None, progress=None):
-    """Denoise a `dng.MosaicDNG`; `run` is a cached `make_run(opts)`."""
+    """Denoise a `dng.MosaicDNG` or `dng.LinearDNG`; `run` is a cached
+    `make_run(opts, raw.kind)`."""
+    if raw.kind == "linear":
+        return denoise_linear_dng(raw, opts, run, progress)
     tile, margin = tiling(opts.tile, opts.margin)
     if opts.noise:
         v = [float(x) for x in opts.noise]
@@ -485,11 +530,84 @@ def denoise_dng(raw, opts, run=None, progress=None):
             print(f"noise a={a.tolist()} b={b.tolist()} {ninfo}",
                   file=sys.stderr)
     if run is None:
-        run = make_run(opts)
+        run = make_run(opts, raw.kind)
     rgb = denoise_mosaic(raw.levels, raw.cfa, a, b, run, tile, margin,
                          progress)
     return Result(rgb, a.tolist(), b.tolist(),
                   opts.model_path().name, run.state["prov"][0])
+
+
+# ---------------------------------------------------------------------------
+# Linear (demosaiced) DNGs: TreeNet models of RawForge, conditioned on the
+# ISO (trained on linear Rec.2020 RGB; here fed the white balanced camera RGB).
+
+
+def _ramp(n):
+    return np.sin(0.5 * np.pi * (np.arange(n) + 0.5) / n) ** 2
+
+
+def denoise_linear(x, run, iso, progress=None, tile=TREENET_TILE,
+                   overlap=TREENET_OVERLAP):
+    """Denoise a float32 HxWx3 linear image tile by tile, cross-fading the
+    overlaps."""
+    h, w, _ = x.shape
+    step = tile - overlap
+    ph = tile + -(-max(h - tile, 0) // step) * step
+    pw = tile + -(-max(w - tile, 0) // step) * step
+    xp = np.pad(x, ((0, ph - h), (0, pw - w), (0, 0)), mode="symmetric")
+    acc = np.zeros((ph, pw, 3), np.float32)
+    wsum = np.zeros((ph, pw), np.float32)
+    cond = np.full((1, 1), min(iso, 65535.0) / 6400.0, np.float16)
+    ys = range(0, ph - tile + 1, step)
+    xs = range(0, pw - tile + 1, step)
+    total = len(ys) * len(xs)
+    ramp = _ramp(overlap).astype(np.float32)
+    done = 0
+    for y0 in ys:
+        wy = np.ones(tile, np.float32)
+        if y0 > 0:
+            wy[:overlap] = ramp
+        if y0 + tile < ph:
+            wy[-overlap:] = ramp[::-1]
+        for x0 in xs:
+            wx = np.ones(tile, np.float32)
+            if x0 > 0:
+                wx[:overlap] = ramp
+            if x0 + tile < pw:
+                wx[-overlap:] = ramp[::-1]
+            win = wy[:, None] * wx[None, :]
+            inp = np.ascontiguousarray(
+                xp[y0:y0 + tile, x0:x0 + tile].transpose(2, 0, 1)[None],
+                dtype=np.float16)
+            out = run(inp, cond)[0].astype(np.float32).transpose(1, 2, 0)
+            acc[y0:y0 + tile, x0:x0 + tile] += out * win[..., None]
+            wsum[y0:y0 + tile, x0:x0 + tile] += win
+            done += 1
+            if progress:
+                progress(done, total)
+    return (acc / wsum[..., None])[:h, :w]
+
+
+def denoise_linear_dng(raw, opts, run=None, progress=None):
+    if run is None:
+        run = make_run(opts, "linear")
+    if opts.iso:
+        iso, guessed = float(opts.iso), False
+    elif raw.iso:
+        iso, guessed = float(raw.iso), False
+    else:
+        iso, guessed = float(DEFAULT_ISO), True
+    # stay in camera space: only the as-shot white balance is applied (the
+    # network sees roughly equal channels for neutrals) and undone after, with
+    # no clipping, so that nothing is lost above white
+    gains = raw.gains.astype(np.float32)
+    saturated = raw.rgb.max(axis=2) >= 0.999
+    out = denoise_linear(raw.rgb * gains, run, iso, progress)
+    out = np.nan_to_num(np.maximum(out, 0.0)) / gains
+    # the model never saw saturated pixels: keep them as they are
+    out[saturated] = raw.rgb[saturated]
+    return Result(out, [], [], opts.model_path("linear").name,
+                  run.state["prov"][0], iso, guessed)
 
 
 # ---------------------------------------------------------------------------

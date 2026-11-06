@@ -13,7 +13,7 @@ def getopts():
     p.add_argument('--mode', choices=['mask', 'heal', 'denoise'],
                    help='mask: AI mask builder; '
                    'heal: AI-assisted healing; '
-                   'denoise: raw denoising of a mosaiced DNG. '
+                   'denoise: raw denoising of a mosaiced or linear DNG. '
                    'If not given, the GUI asks which mode to use')
     p.add_argument('--download-heal-model', nargs='?', const='auto',
                    choices=['auto', 'onnx', 'torch'], metavar='BACKEND',
@@ -33,8 +33,9 @@ def getopts():
                    'and exit')
     g = p.add_argument_group(
         'raw denoising (--mode denoise)',
-        'The input is a mosaiced DNG, e.g. made with ART-cli '
-        '--raw-preprocess=mosaic. By default the GUI is started; with --cli '
+        'The input is a mosaiced or a linear (demosaiced) DNG, made with '
+        'ART-cli --raw-preprocess=mosaic or --raw-preprocess=demosaic. By '
+        'default the GUI is started; with --cli '
         'the image is denoised and saved without it. Unset options default '
         'to the configuration file.')
     g.add_argument('--cli', action='store_true',
@@ -42,7 +43,11 @@ def getopts():
     g.add_argument('-o', '--output', metavar='FILE',
                    help='output file (default: INPUT-denoised.tif)')
     g.add_argument('-m', '--model', choices=list(config.DENOISE_MODELS),
-                   help='model (default: balanced)')
+                   help='model (default: balanced); mosaiced and linear DNGs '
+                   'have their own networks for each choice')
+    g.add_argument('--iso', type=float,
+                   help='linear DNGs: the ISO the model is conditioned on '
+                   '(default: from the file)')
     g.add_argument('--model-file', help='use this ONNX file instead of a '
                    'model')
     g.add_argument('--backend', choices=['onnxruntime', 'torch'],
@@ -124,8 +129,10 @@ def download_denoise_model(conf, which):
     if which == 'config':
         which = conf.denoise_model
     for tier in (config.DENOISE_MODELS if which == 'all' else [which]):
-        name, url, size, sha = config.DENOISE_MODELS[tier]
-        download(url, conf.get_denoise_model_file(tier), size, sha)
+        # the networks for mosaiced and for linear DNGs
+        for kind in ('mosaic', 'linear'):
+            name, url, size, sha = config.denoise_models(kind)[tier]
+            download(url, conf.get_denoise_model_file(tier, kind), size, sha)
 
 
 def main():

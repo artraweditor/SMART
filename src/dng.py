@@ -1,10 +1,11 @@
 """DNG input/output for raw denoising, on top of tifffile.
 
-Input is deliberately limited to what `ART-cli --raw-preprocess=mosaic`
-writes: a single-IFD, uncompressed, one-sample CFA (Bayer) DNG with 16-bit
-integer or 32-bit float samples, black level 0 and the data already cropped
-to the active area.  Other raw files (compressed, multi-IFD, with black
-levels, ...) are not supported: convert them first with ART-cli.
+Input is deliberately limited to what `ART-cli --raw-preprocess=mosaic` or
+`--raw-preprocess=demosaic` writes: a single-IFD, uncompressed DNG with
+16-bit integer or 32-bit float samples, either one-sample CFA (Bayer) or
+three-sample LinearRaw, black level 0 and the data already cropped to the
+active area.  Other raw files (compressed, multi-IFD, with black levels,
+...) are not supported: convert them first with ART-cli.
 
 ART writes no BlackLevel (black is 0) and no ActiveArea (the data are
 already cropped), so those tags are ignored; WhiteLevel is raised to the data
@@ -22,6 +23,7 @@ import numpy as np
 import colorspace
 
 TAG_PHOTOMETRIC_CFA = 32803
+TAG_PHOTOMETRIC_LINEAR = 34892
 _ILLUMINANT_PREFERENCE = (21, 20, 23)   # D65, D55, D50
 
 
@@ -40,6 +42,9 @@ class MosaicDNG:
     neutral: np.ndarray      # as-shot neutral, camera RGB (G = 1)
     xyz_cam: np.ndarray      # 3x3, XYZ (D65) -> camera RGB
     path: str
+    iso: float | None = None
+
+    kind = 'mosaic'
 
     @property
     def name(self):
@@ -48,8 +53,37 @@ class MosaicDNG:
     @property
     def gains(self):
         """White-balance gains (G = 1) for the as-shot illuminant."""
-        g = 1.0 / np.maximum(self.neutral, 1e-6)
-        return g / g[1]
+        return _gains(self.neutral)
+
+
+@dataclass
+class LinearDNG:
+    """A demosaiced linear (LinearRaw) DNG, as written by
+    `ART-cli --raw-preprocess=demosaic` or by this program."""
+    rgb: np.ndarray          # float32 HxWx3, 0 = black, 1 = white
+    white: float             # raw value that `rgb` == 1 stands for
+    make: str | None
+    model: str | None
+    orientation: int
+    neutral: np.ndarray
+    xyz_cam: np.ndarray
+    path: str
+    iso: float | None = None
+
+    kind = 'linear'
+
+    @property
+    def name(self):
+        return os.path.basename(self.path)
+
+    @property
+    def gains(self):
+        return _gains(self.neutral)
+
+
+def _gains(neutral):
+    g = 1.0 / np.maximum(neutral, 1e-6)
+    return g / g[1]
 
 
 def _floats(tag):
@@ -86,14 +120,101 @@ def _color_matrix(page):
     return np.linalg.inv(colorspace._SRGB_TO_XYZ)
 
 
-def read_mosaic_dng(path):
+def _iso(tf, page):
+    """The ISO speed from the Exif IFD (or IFD0), if any."""
+    for tags in (_tag(page, 'ExifTag'), None):
+        if isinstance(tags, dict):
+            v = tags.get('ISOSpeedRatings', tags.get('ISOSpeed'))
+        elif tags is None:
+            v = _tag(page, 'ISOSpeedRatings')
+        else:
+            continue
+        if v is not None:
+            v = np.atleast_1d(v)
+            if v.size and float(v[0]) > 0:
+                return float(v[0])
+    return None
+
+
+def _open(path):
     import tifffile
     path = str(path)
     try:
-        tf = tifffile.TiffFile(path)
+        return tifffile.TiffFile(path)
     except Exception as e:
         raise DNGError(f'cannot read {path}: {e}') from e
-    with tf:
+
+
+def _metadata(tf, page):
+    nt = page.tags.get('AsShotNeutral')
+    neutral = _floats(nt) if nt is not None else np.ones(3)
+    if neutral.size != 3 or (neutral <= 0).any():
+        neutral = np.ones(3)
+    orientation = int(_tag(page, 'Orientation') or 1)
+    return dict(
+        orientation=orientation if orientation in (3, 6, 8) else 1,
+        make=_tag(page, 'Make'), model=_tag(page, 'Model'),
+        xyz_cam=np.asarray(_color_matrix(page), np.float64),
+        neutral=neutral / neutral[1], iso=_iso(tf, page))
+
+
+def _white(data, page):
+    wl = _tag(page, 'WhiteLevel')
+    if data.dtype.kind == 'f':
+        nominal = 1.0
+    else:
+        nominal = float(np.atleast_1d(wl)[0]) if wl is not None \
+            else float(np.iinfo(data.dtype).max)
+    white = max(nominal, float(data.max()))
+    if white <= 0:
+        raise DNGError('empty image')
+    return white
+
+
+def photometric(path):
+    """The PhotometricInterpretation of a DNG (32803 CFA, 34892 LinearRaw)."""
+    with _open(path) as tf:
+        page = tf.pages[0]
+        if 'DNGVersion' not in page.tags:
+            raise DNGError('not a DNG file')
+        return int(page.photometric)
+
+
+def read_dng(path):
+    """A `MosaicDNG` or a `LinearDNG`, according to the file."""
+    if photometric(path) == TAG_PHOTOMETRIC_LINEAR:
+        return read_linear_dng(path)
+    return read_mosaic_dng(path)
+
+
+def read_linear_dng(path):
+    path = str(path)
+    with _open(path) as tf:
+        page = tf.pages[0]
+        if 'DNGVersion' not in page.tags:
+            raise DNGError('not a DNG file')
+        if int(page.photometric) != TAG_PHOTOMETRIC_LINEAR:
+            raise DNGError(
+                'not a linear (demosaiced) DNG; create one with '
+                '`ART-cli --raw-preprocess=demosaic`')
+        if page.samplesperpixel != 3 or int(page.compression) != 1 \
+           or page.dtype.kind not in 'uf' or page.dtype.itemsize < 2:
+            raise DNGError(
+                'unsupported DNG: only uncompressed 3-channel 16-bit '
+                'integer or 32-bit float linear DNGs are supported; create '
+                'one with `ART-cli --raw-preprocess=demosaic`')
+        data = page.asarray()
+        meta = _metadata(tf, page)
+        white = _white(data, page)
+    if data.ndim != 3 or data.shape[2] != 3 or min(data.shape[:2]) < 4:
+        raise DNGError('unsupported or too small linear DNG')
+    rgb = np.maximum(data.astype(np.float32) / np.float32(white), 0.0)
+    return LinearDNG(rgb=rgb, white=white, path=path, **meta)
+
+
+def read_mosaic_dng(path):
+    path = str(path)
+    with _open(path) as tf:
         page = tf.pages[0]
         if 'DNGVersion' not in page.tags:
             raise DNGError('not a DNG file')
@@ -124,31 +245,12 @@ def read_mosaic_dng(path):
                            'RGB Bayer only')
         cfa = np.array(idx).reshape(2, 2)
         data = page.asarray()
-        orientation = int(_tag(page, 'Orientation') or 1)
-        make, model = _tag(page, 'Make'), _tag(page, 'Model')
-        xyz_cam = _color_matrix(page)
-        nt = page.tags.get('AsShotNeutral')
-        neutral = _floats(nt) if nt is not None else np.ones(3)
-        if neutral.size != 3 or (neutral <= 0).any():
-            neutral = np.ones(3)
-        wl = _tag(page, 'WhiteLevel')
+        meta = _metadata(tf, page)
+        white = _white(data, page)
     if data.shape[0] < 4 or data.shape[1] < 4:
         raise DNGError('raw image too small')
-    if data.dtype.kind == 'f':
-        nominal = 1.0
-    else:
-        nominal = float(np.atleast_1d(wl)[0]) if wl is not None \
-            else float(np.iinfo(data.dtype).max)
-    white = max(nominal, float(data.max()))
-    if white <= 0:
-        raise DNGError('empty image')
     levels = np.maximum(data.astype(np.float32) / np.float32(white), 0.0)
-    return MosaicDNG(levels=levels, cfa=cfa, white=white, make=make,
-                     model=model,
-                     orientation=orientation if orientation in (3, 6, 8)
-                     else 1,
-                     neutral=neutral / neutral[1],
-                     xyz_cam=np.asarray(xyz_cam, np.float64), path=path)
+    return MosaicDNG(levels=levels, cfa=cfa, white=white, path=path, **meta)
 
 
 def apply_orientation(img, orientation):

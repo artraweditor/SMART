@@ -35,8 +35,11 @@ class DenoiseEngine(BaseEngine):
     # ------------------------------------------------------------ image
     def load_image(self, filename):
         self.reset(True)
-        raw = dng.read_mosaic_dng(filename)
-        before = denoise.bilinear_demosaic(raw.levels, raw.cfa)
+        raw = dng.read_dng(filename)
+        if raw.kind == 'linear':
+            before = raw.rgb          # already demosaiced
+        else:
+            before = denoise.bilinear_demosaic(raw.levels, raw.cfa)
         self.before_display = denoise.render_display(
             before, raw, self.to_display)
         self.raw = raw
@@ -69,8 +72,8 @@ class DenoiseEngine(BaseEngine):
             return False
         self.busy = True
         self._cancel.clear()
-        opts = dataclasses.replace(self.options, model=model)
         raw = self.raw
+        opts = dataclasses.replace(self.options, model=model)
 
         def check(k, n):
             if self._cancel.is_set():
@@ -82,10 +85,10 @@ class DenoiseEngine(BaseEngine):
             try:
                 if self._cancel.is_set():
                     raise denoise.Cancelled()
-                key = opts.runner_key()
+                key = opts.runner_key(raw.kind)
                 if self._run_key != key:
                     self._run = None    # free the old network first
-                    self._run = denoise.make_run(opts)
+                    self._run = denoise.make_run(opts, raw.kind)
                     self._run_key = key
                 res = denoise.denoise_dng(raw, opts, self._run, check)
                 after = denoise.render_display(res.rgb, raw, self.to_display)
@@ -113,6 +116,6 @@ class DenoiseEngine(BaseEngine):
     def save_image(self, filename):
         if self.result is None:
             raise Exception("nothing to save: denoise the image first")
-        denoise.save_result(filename, self.result, self.raw, self.options,
-                            self.conf.exiftool)
+        denoise.save_result(filename, self.result, self.raw,
+                            self.options, self.conf.exiftool)
         self.saved = True

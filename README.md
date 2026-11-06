@@ -13,9 +13,9 @@ modes:
   working on linear float32 TIFF files exported from ART without
   clipping.
 
-- **Raw denoising**: removes noise from a mosaiced (Bayer) DNG with a
-  learned raw-domain denoiser, with a before/after preview, either from
-  the GUI or from the command line.
+- **Raw denoising**: removes noise from a mosaiced (Bayer) or a linear
+  (demosaiced) DNG with a learned denoiser, with a before/after preview,
+  either from the GUI or from the command line.
 
 The mode is selected with the `--mode` command-line switch: `--mode mask`,
 `--mode heal` or `--mode denoise`. If the switch is not given, the GUI asks
@@ -45,8 +45,11 @@ All the dependencies can be installed with PIP, with the command
 The AI healing and the raw denoising code are ported from
 [greycard](https://github.com/jessolmstead/greycard) (GPL-3.0). 
 The LaMa model used for AI healing is released under the Apache-2.0 license. 
-The raw denoising models are
+The raw denoising models for mosaiced DNGs are
 [those released by the greycard author](https://huggingface.co/jessolmstead/greycard-denoise).
+For linear DNGs, the TreeNet models of
+[RawForge](https://github.com/rymuelle/RawForge) (MIT) are used, as
+repackaged in [rawlab-models](https://huggingface.co/AyedaOk/rawlab-models).
 
 ## Setup
 
@@ -86,10 +89,14 @@ explicitly with `SMART --download-heal-model onnx` or
 Download the denoising model(s) with `SMART --download-denoise-model`
 (the configured one, `balanced` by default), `SMART --download-denoise-model
 best`, or `SMART --download-denoise-model all` (`fast`, `balanced` and
-`best` are 4.9, 9 and 20 MB; larger is better but slower). They are put in
-the `models/` directory. The `denoise_*` parameters of the configuration
-file set the default model, backend (`onnxruntime` or `torch`), provider
-or device (`auto`), tile size and margin, and DNG output depth.
+`best` are 4.9, 9 and 20 MB; larger is better but slower). Each choice
+also has a network for linear DNGs (the TreeNet `light`, standard and
+`heavy` models: 1.5, 10 and 22 MB), downloaded together with it. In the
+GUI, a missing model is offered for download when needed. The models are
+put in the `models/` directory. The `denoise_*` parameters of the
+configuration file set the default model, backend (`onnxruntime` or
+`torch`; onnxruntime only for linear DNGs), provider or device (`auto`),
+tile size and margin (for mosaiced DNGs), and DNG output depth.
 
 ## Usage
 
@@ -120,11 +127,15 @@ their bit depth.
 
 ### Raw denoising
 
-The input must be a mosaiced DNG as written by
-`ART-cli --raw-preprocess=mosaic` (so that ART does the raw
+The input must be a DNG as written by `ART-cli --raw-preprocess=mosaic` or
+`ART-cli --raw-preprocess=demosaic` (so that ART does the raw
 preprocessing: dead pixels, flat field, white balance baking, ...):
-uncompressed, 16-bit integer or 32-bit float, one sample per pixel,
-Bayer pattern (X-Trans is not supported by the model). The DNG reader is
+uncompressed, 16-bit integer or 32-bit float, either a mosaic with one
+sample per pixel (Bayer pattern; X-Trans is not supported by the model) or
+a linear image with three samples per pixel. The model choices (`fast`,
+`balanced`, `best`) are the same for both: the greycard denoiser (which
+demosaics and denoises at once) is used for mosaics, and TreeNet for linear
+files. The DNG reader is
 built on tifffile and nothing else (no rawpy/LibRaw). ART writes
 no black level (it is 0) and the data are already cropped to the active
 area, so `BlackLevel` and `ActiveArea` tags are ignored.
@@ -136,19 +147,28 @@ the wheel zooms around the pointer and dragging pans. The preview is the raw
 data rendered linearly: the as-shot white balance and camera matrix to
 sRGB, then only the sRGB encoding and the display profile (no tone curve or
 exposure change). The "before" image uses plain bilinear demosaicing; the
-network demosaics and denoises at once. Save the result as a float32 linear
+greycard network demosaics and denoises at once, and a linear DNG is
+shown as it is (the before/after views differ only by the denoising). Save
+the result as a float32 linear
 TIFF (camera RGB, no white balance) or as a linear DNG (16-bit or float,
 with camera matrix, as-shot neutral and metadata).
+
+TreeNet is conditioned on the ISO, read from the DNG (override it with
+`--iso`; 800 is assumed if the file has none). It works in camera space:
+the data are only white balanced with the as-shot gains (and the gains are
+undone after), with no colour matrix and no clipping, so that nothing is lost
+above white; saturated pixels are left as they are.
 
 Without the GUI:
 
     SMART --mode denoise --cli photo.dng -o photo.tif
+    SMART --mode denoise --cli linear.dng -m best -o linear-dn.dng
     SMART --mode denoise --cli photo.dng -m best --provider cpu
     SMART --mode denoise --cli photo.dng -o photo-dn.dng --dng-bits 32
     SMART --mode denoise --cli photo.dng --backend torch
 
 The default output is `photo-denoised.tif`. Other options: `--model-file`,
-`--noise aR,bR,aG,bG,aB,bB`, `-f tiff|dng`, `--wb camera` (TIFF only),
+`--noise aR,bR,aG,bG,aB,bB` (mosaics), `--iso` (linear DNGs), `-f tiff|dng`, `--wb camera` (TIFF only),
 `--no-rotate` (TIFF only; the DNG keeps the orientation flag), `--tile`,
 `--margin`, `-v`, and `--progress` (integer percentages on stdout).
 Options not given default to the configuration file.

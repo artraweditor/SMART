@@ -69,6 +69,33 @@ DENOISE_MODELS = {
              'c20aed71a45b2a984570e09d8456c54ce8eff43a334b54c7ebb480c21518f9be'),
 }
 
+# TreeNet denoisers of RawForge (MIT) for demosaiced linear DNGs, as
+# repackaged in https://huggingface.co/AyedaOk/rawlab-models; same tiers as
+# DENOISE_MODELS: tier -> (file name, url, size, sha256)
+_TREENET_URL = 'https://huggingface.co/AyedaOk/rawlab-models/resolve/main/models/'
+LINEAR_DENOISE_MODELS = {
+    'fast': (
+        'treenet-light.onnx',
+        _TREENET_URL + 'rawdenoise-rawforge-shadowweightedl1-light/1.0/'
+        'model.onnx', 1_510_483,
+        '082612f3de352af7353cb3de893f8dd876b8cb942c53cf5c5f8ab4ae2cc9bf78'),
+    'balanced': (
+        'treenet.onnx',
+        _TREENET_URL + 'rawdenoise-rawforge-shadowweightedl1/1.0/model.onnx',
+        10_073_980,
+        '76a07047a33dba3fa27330cec483b43bb57ecb1c1f10db8d979355ce110e34c9'),
+    'best': (
+        'treenet-heavy.onnx',
+        _TREENET_URL + 'rawdenoise-rawforge-shadowweightedl1-heavy/1.0/'
+        'model.onnx', 21_863_084,
+        '0074e2f7bec359c613305811c2c4e7123f738010fb3a98ce67044c48ecfc0129'),
+}
+
+
+def denoise_models(kind):
+    """The model registry for a kind of DNG: 'mosaic' or 'linear'."""
+    return LINEAR_DENOISE_MODELS if kind == 'linear' else DENOISE_MODELS
+
 
 @dataclasses.dataclass
 class Config:
@@ -89,7 +116,7 @@ class Config:
     heal_even: bool = True
     heal_regrain: bool = True
     # raw denoising
-    denoise_model: str = "balanced"     # a key of DENOISE_MODELS
+    denoise_model: str = "balanced"     # fast, balanced or best
     denoise_backend: str = "onnxruntime"  # or "torch"
     denoise_provider: str = "auto"      # onnxruntime provider / torch device
     denoise_tile: int = 1024
@@ -127,8 +154,8 @@ class Config:
     def get_heal_model_file(self, backend):
         return Config.models_dir() / HEAL_MODELS[backend][0]
 
-    def get_denoise_model_file(self, tier):
-        return Config.models_dir() / DENOISE_MODELS[tier][0]
+    def get_denoise_model_file(self, tier, kind='mosaic'):
+        return Config.models_dir() / denoise_models(kind)[tier][0]
 
     @staticmethod
     def get_config_file(legacy=False):
@@ -144,7 +171,10 @@ class Config:
             filename = Config.get_config_file()
         if os.path.exists(filename):
             with open(filename) as f:
-                res = dataclasses.replace(res, **json.load(f))
+                known = {f.name for f in dataclasses.fields(Config)}
+                res = dataclasses.replace(
+                    res, **{k: v for k, v in json.load(f).items()
+                            if k in known})
         return res
 
     def save(self, filename=None):

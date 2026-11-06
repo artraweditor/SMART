@@ -14,7 +14,7 @@ def options_from_args(opts, conf):
     o = denoise.Options.from_config(conf, verbose=bool(opts.verbose))
     for src, dst in (('model', 'model'), ('model_file', 'model_file'),
                      ('backend', 'backend'), ('provider', 'provider'),
-                     ('tile', 'tile'), ('margin', 'margin'),
+                     ('tile', 'tile'), ('margin', 'margin'), ('iso', 'iso'),
                      ('dng_bits', 'dng_bits'), ('wb', 'wb')):
         v = getattr(opts, src, None)
         if v is not None:
@@ -57,13 +57,14 @@ def run(opts, conf):
 
     t0 = time.time()
     try:
-        raw = dng.read_mosaic_dng(src)
+        raw = dng.read_dng(src)
         report(3)
-        run_ = denoise.make_run(o)
+        run_ = denoise.make_run(o, raw.kind)
     except (dng.DNGError, denoise.ModelMissing, ValueError) as e:
         sys.exit(f'error: {e}')
-    h, w = raw.levels.shape
-    print(f'{raw.name} {w}x{h}  model {o.model_path().name}', file=sys.stderr)
+    h, w = raw.levels.shape if raw.kind == 'mosaic' else raw.rgb.shape[:2]
+    print(f'{raw.name} {w}x{h}  model {o.model_path(raw.kind).name}',
+          file=sys.stderr)
     report(10)
 
     def progress(i, n):
@@ -75,6 +76,9 @@ def run(opts, conf):
     t1 = time.time()
     res = denoise.denoise_dng(raw, o, run_, progress)
     print(f'\n  {time.time() - t1:.1f} s on {res.provider}', file=sys.stderr)
+    if res.iso_guessed:
+        print(f'note: no ISO in the file, assumed {res.iso:g} '
+              '(use --iso)', file=sys.stderr)
     copied = denoise.save_result(out, res, raw, o, conf.exiftool)
     if out.suffix.lower() == '.dng' and not copied:
         print('note: exiftool not available or failed; exposure/lens '

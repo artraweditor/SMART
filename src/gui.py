@@ -1058,8 +1058,9 @@ class MainFrame(wx.Frame):
         e = self.engine
         if e.options.model_file or tier not in config.DENOISE_MODELS:
             return True
-        name, url, size, sha = config.DENOISE_MODELS[tier]
-        path = e.conf.get_denoise_model_file(tier)
+        kind = e.raw.kind
+        name, url, size, sha = config.denoise_models(kind)[tier]
+        path = e.conf.get_denoise_model_file(tier, kind)
         ok = ensure_model_file(self, f"The '{tier}' denoising model", name,
                                path, url, size, sha)
         if ok is None:
@@ -1072,8 +1073,10 @@ class MainFrame(wx.Frame):
         self.engine.apply_result(res, after, model)
         self._set_busy(False)
         self.image_panel.show_result()
+        iso = "" if not res.iso else \
+            f", ISO {res.iso:g}{' assumed' if res.iso_guessed else ''}"
         self.statusbar.SetStatusText(
-            f"Denoising done ({res.model} on {res.provider})")
+            f"Denoising done ({res.model} on {res.provider}{iso})")
 
     def _denoise_failed(self, ex):
         import traceback
