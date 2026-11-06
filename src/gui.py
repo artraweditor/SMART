@@ -586,57 +586,83 @@ class MainFrame(wx.Frame):
         # Toolbar
         toolbar = self.CreateToolBar()
         self.toolbar = toolbar
-        bg = toolbar.GetBackgroundColour()
-        l = bg[0]/255.0 * 0.213 + bg[1]/255.0 * 0.715 + bg[2]/255.0 * 0.072
-        repl = b'#ffffff' if l < 0.5 else b'#000000'
         d = config.resource_dir() / 'icons'
         sz = wx.Size(32, 32)
-        def svg(pth):
+        self._toolbar_icons = []
+
+        def icon_colour():
+            # Use the effective appearance of the app, not the toolbar
+            # background: on macOS the latter does not reflect what the
+            # (translucent, natively drawn) toolbar actually looks like.
+            try:
+                dark = wx.SystemSettings.GetAppearance().IsDark()
+            except Exception:
+                bg = toolbar.GetBackgroundColour()
+                lum = (bg[0]/255.0 * 0.213 + bg[1]/255.0 * 0.715 +
+                       bg[2]/255.0 * 0.072)
+                dark = lum < 0.5
+            if os.environ.get('SMART_DEBUG_ICONS'):
+                import sys
+                bg = toolbar.GetBackgroundColour()
+                print("icon colour: toolbar bg=%s window bg=%s "
+                      "SYS_COLOUR_WINDOW=%s IsDark=%s" % (
+                          tuple(bg), tuple(self.GetBackgroundColour()),
+                          tuple(wx.SystemSettings.GetColour(
+                              wx.SYS_COLOUR_WINDOW)), dark),
+                      file=sys.stderr, flush=True)
+            return b'#ffffff' if dark else b'#000000'
+
+        def svg(pth, repl):
             with open(d / pth, 'rb') as f:
                 data = f.read().replace(b'#2a7fff', repl)
                 return wx.BitmapBundle.FromSVG(data, sz)
 
+        def add_tool(tool_id, label, name, **kwargs):
+            tool = toolbar.AddTool(
+                tool_id, label, svg(name, icon_colour()), **kwargs)
+            self._toolbar_icons.append((tool, name))
+            return tool
+
+        def on_sys_colour_changed(event):
+            event.Skip()
+            repl = icon_colour()
+            for tool, name in self._toolbar_icons:
+                tool.SetNormalBitmap(svg(name, repl))
+            toolbar.Realize()
+            toolbar.Refresh()
+        self.Bind(wx.EVT_SYS_COLOUR_CHANGED, on_sys_colour_changed)
+
         what = "mask" if mode == 'mask' else "image"
         self.busy_controls = []
-        tb_open = toolbar.AddTool(
-            wx.ID_OPEN, "Open", svg('folder-open.svg'),
+        tb_open = add_tool(wx.ID_OPEN, "Open", 'folder-open.svg',
             shortHelp="Open image...")
-        tb_save = toolbar.AddTool(
-            wx.ID_SAVE, "Save", svg('save.svg'),
+        tb_save = add_tool(wx.ID_SAVE, "Save", 'save.svg',
             shortHelp=f"Save {what}...")
-        tb_reset = toolbar.AddTool(
-            wx.ID_ANY, "Reset", svg('undo-all.svg'),
+        tb_reset = add_tool(wx.ID_ANY, "Reset", 'undo-all.svg',
             shortHelp={'mask': "Remove all points",
                        'heal': "Revert to the image as loaded",
                        'denoise': "Discard the denoised image"}[mode])
         if mode == 'denoise':
             tb_undo = tb_reset
         else:
-            tb_undo = toolbar.AddTool(
-                wx.ID_ANY, "Undo", svg('undo.svg'),
+            tb_undo = add_tool(wx.ID_ANY, "Undo", 'undo.svg',
                 shortHelp="Remove last added point" if mode == 'mask'
                 else "Undo last stroke or healing")
-        tb_zoom_in = toolbar.AddTool(
-            wx.ID_ZOOM_IN, "Zoom In", svg('magnifier-plus.svg'),
+        tb_zoom_in = add_tool(wx.ID_ZOOM_IN, "Zoom In", 'magnifier-plus.svg',
             shortHelp="Zoom in")
-        tb_zoom_out = toolbar.AddTool(
-            wx.ID_ZOOM_OUT, "Zoom Out", svg('magnifier-minus.svg'),
+        tb_zoom_out = add_tool(wx.ID_ZOOM_OUT, "Zoom Out", 'magnifier-minus.svg',
             shortHelp="Zoom out")
-        tb_zoom_1_1 = toolbar.AddTool(
-            wx.ID_ANY, "Zoom 1:1", svg('magnifier-1to1.svg'),
+        tb_zoom_1_1 = add_tool(wx.ID_ANY, "Zoom 1:1", 'magnifier-1to1.svg',
             shortHelp="Zoom to 100%")
-        tb_zoom_fit = toolbar.AddTool(
-            wx.ID_ANY, "Zoom Fit", svg('magnifier-fit.svg'),
+        tb_zoom_fit = add_tool(wx.ID_ANY, "Zoom Fit", 'magnifier-fit.svg',
             shortHelp="Zoom to fit")
         tb_heal = tb_clear = None
         heal_key = "Cmd+Enter" if wx.Platform == '__WXMAC__' else "Ctrl+Enter"
         if mode == 'heal':
             toolbar.AddSeparator()
-            tb_heal = toolbar.AddTool(
-                wx.ID_ANY, "Heal", svg('heal.svg'),
+            tb_heal = add_tool(wx.ID_ANY, "Heal", 'heal.svg',
                 shortHelp=f"Heal the painted areas ({heal_key})")
-            tb_clear = toolbar.AddTool(
-                wx.ID_ANY, "Clear strokes", svg('brush-clear.svg'),
+            tb_clear = add_tool(wx.ID_ANY, "Clear strokes", 'brush-clear.svg',
                 shortHelp="Remove the painted areas (Esc)")
             toolbar.AddSeparator()
             self.spin_radius = self._add_spin(
