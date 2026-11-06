@@ -552,7 +552,7 @@ class MainFrame(wx.Frame):
                          size=conf.window_size)
 
         icon_path = \
-            Path(__file__).resolve().parent.parent / 'icons' / 'app-icon.png'
+            config.resource_dir() / 'icons' / 'app-icon.png'
         if icon_path.exists():
             icon = wx.Icon(str(icon_path), wx.BITMAP_TYPE_PNG)
             self.SetIcon(icon)
@@ -591,7 +591,7 @@ class MainFrame(wx.Frame):
         bg = toolbar.GetBackgroundColour()
         l = bg[0]/255.0 * 0.213 + bg[1]/255.0 * 0.715 + bg[2]/255.0 * 0.072
         repl = b'#ffffff' if l < 0.5 else b'#000000'
-        d = Path(__file__).resolve().parent.parent / 'icons'
+        d = config.resource_dir() / 'icons'
         sz = wx.Size(32, 32)
         def svg(pth):
             with open(d / pth, 'rb') as f:

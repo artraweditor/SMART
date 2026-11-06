@@ -1,0 +1,108 @@
+name: Build (Linux x64)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: 'Python minor version (python-build-standalone)'
+        default: '3.12'
+      pbs_tag:
+        description: 'python-build-standalone release tag (empty = latest)'
+        default: ''
+
+permissions:
+  contents: write   # needed to attach the archive to a release
+
+env:
+  PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
+  PBS_TAG: ${{ inputs.pbs_tag || '' }}
+  PBS_TRIPLE: x86_64-unknown-linux-gnu
+
+jobs:
+  build:
+    # oldest available image, for the widest glibc compatibility
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system libraries (wxPython runtime)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-0 libnotify4 libsdl2-2.0-0 \
+            libwebkit2gtk-4.0-37 libxtst6 xvfb
+
+      - name: Get Python (python-build-standalone)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p pbs
+          gh release download $PBS_TAG --repo astral-sh/python-build-standalone \
+            --pattern "cpython-${PYTHON_VERSION}.*-${PBS_TRIPLE}-install_only.tar.gz" \
+            --dir pbs
+          tar -xzf pbs/*.tar.gz -C pbs
+          echo "PY=$PWD/pbs/python/bin/python3" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: |
+          "$PY" --version
+          "$PY" -m pip install --upgrade pip setuptools wheel
+          # CPU-only PyTorch: the CUDA wheels would make the bundle huge
+          "$PY" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          # sam2 builds against the already-installed torch; skip the CUDA extension
+          SAM2_BUILD_CUDA=0 "$PY" -m pip install --no-build-isolation \
+            --find-links https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-22.04/ \
+            -r requirements.txt
+          "$PY" -m pip install pyinstaller
+
+      - name: Get ExifTool
+        run: |
+          VER=$(curl -fsSL https://exiftool.org/ver.txt)
+          curl -fsSL -o exiftool.tar.gz "https://exiftool.org/Image-ExifTool-${VER}.tar.gz"
+          tar -xzf exiftool.tar.gz
+          # Perl distribution (needs perl on the target; run via its shebang)
+          mkdir -p exiftool-bundle
+          cp -R "Image-ExifTool-${VER}/exiftool" "Image-ExifTool-${VER}/lib" \
+            "Image-ExifTool-${VER}/README" exiftool-bundle/
+          chmod +x exiftool-bundle/exiftool
+          exiftool-bundle/exiftool -ver
+
+      - name: Build with PyInstaller
+        run: |
+          "$PY" -m PyInstaller --noconfirm --clean --name SMART \
+            --paths src \
+            --icon icons/app-icon.png \
+            --add-data "icons:icons" \
+            --add-data "data:data" \
+            --add-data "exiftool-bundle:exiftool" \
+            --collect-all sam2 --collect-all hydra --collect-all omegaconf \
+            --collect-submodules imagecodecs --collect-binaries onnxruntime \
+            src/main.py
+
+      - name: Smoke test
+        run: |
+          xvfb-run -a dist/SMART/SMART --help
+          EXIF=$(find dist -path '*/exiftool/exiftool' -type f | head -1)
+          echo "bundled exiftool: $EXIF"
+          "$EXIF" -ver
+
+      - name: Package
+        id: pkg
+        run: |
+          VERSION=$("$PY" -c "import re;print(re.search(r\"version = '([^']+)'\", open('src/config.py').read()).group(1))")
+          NAME="SMART-${VERSION}-linux-x64"
+          mv dist/SMART "dist/${NAME}"
+          tar -C dist -czf "${NAME}.tar.gz" "${NAME}"
+          echo "file=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SMART-linux-x64
+          path: ${{ steps.pkg.outputs.file }}
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pkg.outputs.file }}

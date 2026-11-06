@@ -3,7 +3,20 @@ from typing import Literal
 from pathlib import Path
 import os
 import json
-from platformdirs import user_config_dir
+import sys
+from platformdirs import user_config_dir, user_data_dir
+
+
+def is_frozen():
+    """True when running as a stand-alone (PyInstaller) build."""
+    return getattr(sys, 'frozen', False)
+
+
+def resource_dir():
+    """Directory containing the read-only data/ and icons/ directories."""
+    if is_frozen():
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent.parent
 
 version = '0.2'
 
@@ -89,7 +102,7 @@ class Config:
 
     def get_model_config(self):
         if self.model_config is not None:
-            return '../models', self.model_config
+            return str(Config.models_dir()), self.model_config
         confmap = {
             "sam2.1_hiera_tiny.pt": "sam2.1_hiera_t.yaml",
             "sam2.1_hiera_small.pt": "sam2.1_hiera_s.yaml",
@@ -98,18 +111,21 @@ class Config:
         }
         name = confmap.get(self.model)
         if name is not None:
-            return '../data', name
+            return str(resource_dir() / 'data'), name
         raise ValueError(f'no model configuration found')
 
     @staticmethod
     def models_dir():
+        if is_frozen():
+            # the application bundle is read-only: keep models in user space
+            return Path(user_data_dir('SMART', 'ART')) / 'models'
         return Path(__file__).parent / '../models'
 
     def get_model_file(self):
         return Config.models_dir() / self.model
 
     def get_heal_model_file(self, backend):
-        return Path(__file__).parent / '../models/' / HEAL_MODELS[backend][0]
+        return Config.models_dir() / HEAL_MODELS[backend][0]
 
     def get_denoise_model_file(self, tier):
         return Config.models_dir() / DENOISE_MODELS[tier][0]

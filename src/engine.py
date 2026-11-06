@@ -7,6 +7,7 @@ import hashlib
 
 import numpy as np
 from PIL import Image, ImageCms
+import config
 from engine_base import BaseEngine
 
 
@@ -27,8 +28,9 @@ class AIMaskingEngine(BaseEngine):
         super().__init__(conf)
         sam2_checkpoint = self.conf.get_model_file()
         model_cfg_dir, model_cfg = self.conf.get_model_config()
-        with hydra.initialize(version_base=None,
-                              config_path=model_cfg_dir):
+        with hydra.initialize_config_dir(
+                version_base=None,
+                config_dir=str(Path(model_cfg_dir).resolve())):
             self.sam2_model = build_sam2(model_cfg,
                                          sam2_checkpoint,
                                          device=self.conf.device)
@@ -154,8 +156,7 @@ class AIMaskingEngine(BaseEngine):
             subprocess.run([
                 self.conf.exiftool,
                 '-config',
-                os.path.join(os.path.dirname(__file__),
-                             '../data/exiftool.config'),
+                str(config.resource_dir() / 'data' / 'exiftool.config'),
                 '-overwrite_original',
                 '-Smart_mask_data=' + json.dumps(data),
                 filename], capture_output=True)

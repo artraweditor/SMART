@@ -128,6 +128,8 @@ def download_denoise_model(conf, which):
 
 
 def main():
+    import frozen_env
+    frozen_env.setup()
     opts = getopts()
     conf = config.Config.load()
     if opts.download_denoise_model:
@@ -154,6 +156,7 @@ def main():
             conf.save()
             os.unlink(legacy_fn)
         import gui
+        frozen_env.gui_started()
         gui.main(conf, opts.input_file, opts.mode, opts.outdir, opts)
 
 
