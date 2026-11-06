@@ -1,10 +1,12 @@
 import wx
 import os
+import threading
 from pathlib import Path
 import numpy as np
 from PIL import Image
 
 import config
+import denoise
 
 CACHE_BELOW = 0.5   # below this zoom a scaled copy of the image is cached
 
@@ -360,12 +362,192 @@ class ImagePanel(wx.Panel):
 # end of class ImagePanel
 
 
+class _Layer:
+    def __init__(self, arr):
+        self.arr = np.ascontiguousarray(arr)
+        self.pil = Image.fromarray(self.arr)
+        self.cache = None
+        self.key = None
+
+
+class ComparePanel(ImagePanel):
+    """Before/after viewer: the two images share zoom and pan, and a
+    draggable divider shows "before" on its left and "after" on its right."""
+    GRAB = 6    # pixels around the divider that grab it
+
+    def __init__(self, parent, engine):
+        super().__init__(parent, engine, 'denoise')
+        self.layers = {}
+        self.view = 'split'     # 'split', 'before' or 'after'
+        self.split = 0.5        # divider position, fraction of the width
+        self.moving_divider = False
+
+    # ------------------------------------------------------------ images
+    def set_layers(self, before, after=None):
+        self.layers = {}
+        self.image = before
+        if before is not None:
+            self.layers['before'] = _Layer(before)
+        if after is not None:
+            self.layers['after'] = _Layer(after)
+        self.Refresh()
+
+    def load_image(self, path):
+        self.engine.load_image(path)
+        self.set_layers(self.engine.displayed_image)
+        self.split = 0.5
+        self.center_image()
+        self.zoom_fit()
+
+    def show_result(self):
+        """The engine has a new denoised image."""
+        self.set_layers(self.engine.before_display,
+                        self.engine.after_display)
+        self.Refresh()
+
+    def reset(self, clear_image=False):
+        self.engine.reset(clear_image)
+        self.set_layers(self.engine.displayed_image)
+
+    def undo(self):
+        self.reset()
+
+    def set_view(self, view):
+        self.view = view
+        self.Refresh()
+
+    def _mode(self):
+        return self.view if 'after' in self.layers else 'before'
+
+    # ------------------------------------------------------------ painting
+    def _split_x(self):
+        return int(self.offset_x) + int(self.split * self._dest_size()[0])
+
+    def _render_layer(self, name, rx, ry, rw, rh):
+        if rw <= 0 or rh <= 0:
+            return None
+        layer = self.layers[name]
+        self._pil, self._cache, self._cache_key = \
+            layer.pil, layer.cache, layer.key
+        try:
+            return ImagePanel._render(self, rx, ry, rw, rh)
+        finally:
+            layer.cache, layer.key = self._cache, self._cache_key
+
+    def _render(self, rx, ry, rw, rh):
+        mode = self._mode()
+        if mode != 'split':
+            return self._render_layer(mode, rx, ry, rw, rh)
+        sx = self._split_x()
+        left = self._render_layer('before', rx, ry, min(rx + rw, sx) - rx, rh)
+        x1 = max(rx, sx)
+        right = self._render_layer('after', x1, ry, rx + rw - x1, rh)
+        if left is None or right is None:
+            return left or right
+        return (left[0], left[1], left[2] + right[2], left[3],
+                np.ascontiguousarray(np.concatenate([left[4], right[4]],
+                                                    axis=1)))
+
+    def on_paint(self, event):
+        dc = wx.BufferedPaintDC(self)
+        rect = self.GetUpdateRegion().GetBox()
+        if rect.IsEmpty():
+            rect = wx.Rect(self.GetClientSize())
+        dc.SetClippingRegion(rect)
+        dc.Clear()
+        if not self.has_image():
+            return
+        r = self._render(rect.x, rect.y, rect.width, rect.height)
+        if r is not None:
+            x, y, w, h, buf = r
+            dc.DrawBitmap(wx.Bitmap.FromBuffer(w, h, buf), x, y, False)
+        if self._mode() == 'split':
+            sx = self._split_x()
+            dw, dh = self._dest_size()
+            y0, y1 = int(self.offset_y), int(self.offset_y) + dh
+            if int(self.offset_x) <= sx <= int(self.offset_x) + dw:
+                for color, width in ((wx.Colour(0, 0, 0), 3),
+                                     (wx.Colour(255, 255, 255), 1)):
+                    dc.SetPen(wx.Pen(color, width))
+                    dc.DrawLine(sx, y0, sx, y1)
+                cy = (y0 + y1) // 2
+                dc.SetBrush(wx.Brush(wx.Colour(255, 255, 255)))
+                dc.SetPen(wx.Pen(wx.Colour(0, 0, 0), 1))
+                dc.DrawCircle(sx, cy, 7)
+
+    # ------------------------------------------------------------ events
+    def _near_divider(self, x):
+        return self._mode() == 'split' and \
+            abs(x - self._split_x()) <= self.GRAB
+
+    def _move_divider(self, x):
+        dw = self._dest_size()[0]
+        self.split = min(max((x - int(self.offset_x)) / dw, 0.0), 1.0)
+        self.Refresh()
+
+    def on_left_down(self, event):
+        if self.image is None:
+            return
+        if self._near_divider(event.GetX()):
+            self.moving_divider = True
+        else:
+            self.dragging = True
+            self.drag_start = (event.GetX(), event.GetY())
+        self.CaptureMouse()
+
+    def on_left_up(self, event):
+        if self.moving_divider or self.dragging:
+            self.moving_divider = self.dragging = False
+            if self.HasCapture():
+                self.ReleaseMouse()
+            self.Refresh()
+
+    def on_right_down(self, event):
+        pass
+
+    def on_right_up(self, event):
+        pass
+
+    def on_motion(self, event):
+        if self.image is None:
+            return
+        if self.moving_divider and event.LeftIsDown():
+            self._move_divider(event.GetX())
+        elif self.dragging and event.Dragging() and event.LeftIsDown():
+            self.offset_x += event.GetX() - self.drag_start[0]
+            self.offset_y += event.GetY() - self.drag_start[1]
+            self.drag_start = (event.GetX(), event.GetY())
+            self.Refresh()
+        else:
+            self.SetCursor(wx.Cursor(
+                wx.CURSOR_SIZEWE if self._near_divider(event.GetX())
+                else wx.CURSOR_ARROW))
+
+    def on_mousewheel(self, event):
+        rotation = event.GetWheelRotation()
+        if rotation and self.has_image():
+            self.zoom_at(1.1 if rotation > 0 else 1 / 1.1,
+                         event.GetX(), event.GetY())
+
+    def zoom_at(self, factor, x, y):
+        """Zoom keeping the image point under the screen point (x, y)."""
+        ix, iy = self.to_image_coords_f(x, y)
+        self.zoom *= factor
+        dw, dh = self._dest_size()
+        rw, rh = self.engine.get_size()
+        self.offset_x = x - ix * dw / rw
+        self.offset_y = y - iy * dh / rh
+        self.Refresh()
+
+# end of class ComparePanel
+
+
 class MainFrame(wx.Frame):
     def __init__(self, conf, engine, mode='mask', outdir=None):
         self.mode = mode
         self.outdir = outdir    # default directory of the save dialog
-        title = "SMART AI mask builder" if mode == 'mask' \
-            else "SMART AI healing"
+        title = {'mask': "SMART AI mask builder", 'heal': "SMART AI healing",
+                 'denoise': "SMART raw denoising"}[mode]
         super().__init__(None, title=title + " - v" + config.version,
                          size=conf.window_size)
 
@@ -383,6 +565,10 @@ class MainFrame(wx.Frame):
         if mode == 'mask':
             msg = "shift+left click: add positive point; " \
                 "shift+right click: add negative point   "
+        elif mode == 'denoise':
+            key = "Cmd" if wx.Platform == '__WXMAC__' else "Ctrl"
+            msg = "drag: pan; drag the divider: compare; wheel: zoom; " \
+                f"{key}+Enter: denoise   "
         else:
             key = "Cmd" if wx.Platform == '__WXMAC__' else "Ctrl"
             msg = "shift+left drag: paint; shift+right drag: erase; " \
@@ -413,6 +599,7 @@ class MainFrame(wx.Frame):
                 return wx.BitmapBundle.FromSVG(data, sz)
 
         what = "mask" if mode == 'mask' else "image"
+        self.busy_controls = []
         tb_open = toolbar.AddTool(
             wx.ID_OPEN, "Open", svg('folder-open.svg'),
             shortHelp="Open image...")
@@ -421,12 +608,16 @@ class MainFrame(wx.Frame):
             shortHelp=f"Save {what}...")
         tb_reset = toolbar.AddTool(
             wx.ID_ANY, "Reset", svg('undo-all.svg'),
-            shortHelp="Remove all points" if mode == 'mask'
-            else "Revert to the image as loaded")
-        tb_undo = toolbar.AddTool(
-            wx.ID_ANY, "Undo", svg('undo.svg'),
-            shortHelp="Remove last added point" if mode == 'mask'
-            else "Undo last stroke or healing")
+            shortHelp={'mask': "Remove all points",
+                       'heal': "Revert to the image as loaded",
+                       'denoise': "Discard the denoised image"}[mode])
+        if mode == 'denoise':
+            tb_undo = tb_reset
+        else:
+            tb_undo = toolbar.AddTool(
+                wx.ID_ANY, "Undo", svg('undo.svg'),
+                shortHelp="Remove last added point" if mode == 'mask'
+                else "Undo last stroke or healing")
         tb_zoom_in = toolbar.AddTool(
             wx.ID_ZOOM_IN, "Zoom In", svg('magnifier-plus.svg'),
             shortHelp="Zoom in")
@@ -459,6 +650,26 @@ class MainFrame(wx.Frame):
             self.Bind(wx.EVT_SPINCTRLDOUBLE, self.on_brush_changed)
             self.Bind(wx.EVT_TEXT_ENTER, self.on_brush_changed)
             self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
+        self.id_denoise = wx.NewIdRef()
+        if mode == 'denoise':
+            toolbar.AddSeparator()
+            toolbar.AddControl(wx.StaticText(toolbar, label=" Model "))
+            self.choice_model = wx.Choice(
+                toolbar, choices=list(config.DENOISE_MODELS))
+            self.choice_model.SetStringSelection(engine.options.model)
+            toolbar.AddControl(self.choice_model)
+            self.btn_denoise = wx.Button(toolbar, label="Denoise")
+            self.btn_denoise.SetToolTip(f"Denoise the image ({heal_key})")
+            toolbar.AddControl(self.btn_denoise)
+            toolbar.AddSeparator()
+            toolbar.AddControl(wx.StaticText(toolbar, label=" View "))
+            self.choice_view = wx.Choice(
+                toolbar, choices=["Before / after", "Before", "After"])
+            self.choice_view.SetSelection(0)
+            toolbar.AddControl(self.choice_view)
+            self.busy_controls = [self.choice_model, self.btn_denoise]
+            self.btn_denoise.Bind(wx.EVT_BUTTON, self.on_denoise)
+            self.choice_view.Bind(wx.EVT_CHOICE, self.on_view_changed)
         toolbar.Realize()
 
         accel_entries = [
@@ -481,13 +692,22 @@ class MainFrame(wx.Frame):
                 wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_ESCAPE,
                                     tb_clear.GetId()),
             ]
+        if mode == 'denoise':
+            accel_entries += [
+                wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_RETURN,
+                                    self.id_denoise),
+                wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER,
+                                    self.id_denoise),
+            ]
+            self.Bind(wx.EVT_MENU, self.on_denoise, id=self.id_denoise)
         accel_table = wx.AcceleratorTable(accel_entries)
         self.SetAcceleratorTable(accel_table)
 
         self.Bind(wx.EVT_MENU, self.on_open_image, tb_open)
         self.Bind(wx.EVT_MENU, self.on_save, tb_save)
         self.Bind(wx.EVT_MENU, self.on_reset, tb_reset)
-        self.Bind(wx.EVT_MENU, self.on_undo, tb_undo)
+        if mode != 'denoise':
+            self.Bind(wx.EVT_MENU, self.on_undo, tb_undo)
         self.Bind(wx.EVT_MENU, self.panel_zoom_in, tb_zoom_in)
         self.Bind(wx.EVT_MENU, self.panel_zoom_out, tb_zoom_out)
         self.Bind(wx.EVT_MENU, self.panel_zoom_1_1, tb_zoom_1_1)
@@ -500,7 +720,8 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_TOOL, self.panel_zoom_fit, tb_zoom_fit)
         self.Bind(wx.EVT_TOOL, self.on_save, tb_save)
         self.Bind(wx.EVT_TOOL, self.on_reset, tb_reset)
-        self.Bind(wx.EVT_TOOL, self.on_undo, tb_undo)
+        if mode != 'denoise':
+            self.Bind(wx.EVT_TOOL, self.on_undo, tb_undo)
         if mode == 'heal':
             for ev in (wx.EVT_MENU, wx.EVT_TOOL):
                 self.Bind(ev, self.on_heal, tb_heal)
@@ -510,7 +731,8 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_CLOSE, self.on_close)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.image_panel = ImagePanel(self, engine, mode)
+        self.image_panel = ComparePanel(self, engine) if mode == 'denoise' \
+            else ImagePanel(self, engine, mode)
         hbox.Add(self.image_panel, proportion=1, flag=wx.EXPAND)
 
         vbox.Add(hbox, proportion=1, flag=wx.EXPAND)
@@ -583,10 +805,14 @@ class MainFrame(wx.Frame):
             return
         if not self.check_save():
             return
+        if self.mode == 'denoise':
+            wildcard = "DNG files (*.dng)|*.dng;*.DNG"
+        else:
+            wildcard = "Image files (*.png;*.jpg;*.jpeg;*.tif;*.tiff)" \
+                "|*.png;*.jpg;*.jpeg;*.tif;*.tiff"
         with wx.FileDialog(
                 self, "Open Image file",
-                wildcard="Image files (*.png;*.jpg;*.jpeg;*.tif;*.tiff)" \
-                "|*.png;*.jpg;*.jpeg;*.tif;*.tiff",
+                wildcard=wildcard,
                 style=wx.FD_OPEN | wx.FD_FILE_MUST_EXIST,
                 defaultDir=self.engine.conf.last_dir) as fd:
             if fd.ShowModal() == wx.ID_CANCEL:
@@ -625,8 +851,22 @@ class MainFrame(wx.Frame):
                 "No mask to save" if self.mode == 'mask'
                 else "No image to save")
             return True
+        if self.mode == 'denoise' and self.engine.result is None:
+            self.statusbar.SetStatusText(
+                "Nothing to save: denoise the image first")
+            return True
         dd = self.outdir or str(self.filename.parent)
-        if self.mode == 'mask':
+        if self.mode == 'denoise':
+            title = "Save Denoised Image"
+            tiff = "Linear float TIFF files (*.tif;*.tiff)|*.tif;*.tiff"
+            dngw = "Linear DNG files (*.dng)|*.dng"
+            if self.engine.default_format == 'dng':
+                df = str(self.filename.stem + "_denoised.dng")
+                wildcard = dngw + "|" + tiff
+            else:
+                df = str(self.filename.stem + "_denoised.tif")
+                wildcard = tiff + "|" + dngw
+        elif self.mode == 'mask':
             title = "Save Mask"
             df = str(self.filename.stem + "_mask.png")
             wildcard = "PNG files (*.png)|*.png|All files (*.*)|*.*"
@@ -651,6 +891,11 @@ class MainFrame(wx.Frame):
             if fd.ShowModal() == wx.ID_CANCEL:
                 return True
             path = fd.GetPath()
+            if self.mode == 'denoise' and not path.lower().endswith(
+                    ('.tif', '.tiff', '.dng')):
+                dng_first = self.engine.default_format == 'dng'
+                path += '.dng' if (fd.GetFilterIndex() == 1) != dng_first \
+                    else '.tif'
             try:
                 if self.mode == 'mask':
                     self.engine.save_mask(path)
@@ -697,6 +942,8 @@ class MainFrame(wx.Frame):
 
     def _set_busy(self, busy):
         self.image_panel.input_enabled = not busy
+        for c in self.busy_controls:
+            c.Enable(not busy)
         for tool in range(self.toolbar.GetToolsCount()):
             t = self.toolbar.GetToolByPos(tool)
             if t.IsButton():
@@ -744,6 +991,146 @@ class MainFrame(wx.Frame):
         wx.MessageDialog(self, f"Healing failed:\n{ex}", "Healing error",
                          wx.OK | wx.ICON_ERROR).ShowModal()
 
+    # ------------------------------------------------------------ denoising
+    def on_view_changed(self, event):
+        self.image_panel.set_view(
+            ('split', 'before', 'after')[self.choice_view.GetSelection()])
+
+    def on_denoise(self, event):
+        e = self.engine
+        if e.raw is None:
+            self.statusbar.SetStatusText("Open a DNG file first")
+            return
+        if e.busy_now():
+            return
+        model = self.choice_model.GetStringSelection()
+        if not self._ensure_model(model):
+            return
+        self._set_busy(True)
+        self.statusbar.SetStatusText("Denoising...")
+        state = {'k': 0, 'n': 0, 'out': None}
+
+        def progress(k, n):
+            state['k'], state['n'] = k, n
+
+        def finish(kind, *args):
+            state['out'] = (kind, args)
+
+        if not e.denoise_async(
+                model,
+                lambda r, a: finish('done', r, a),
+                lambda ex: finish('error', ex),
+                progress):
+            self._set_busy(False)
+            return
+        dlg = wx.ProgressDialog(
+            "Denoising", "Loading the model...", maximum=1000, parent=self,
+            style=wx.PD_APP_MODAL | wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME |
+            wx.PD_REMAINING_TIME | wx.PD_SMOOTH)
+        cancelling = False
+        while state['out'] is None:
+            k, n = state['k'], state['n']
+            if cancelling:
+                keep = dlg.Pulse("Cancelling...")
+            elif n == 0:
+                keep = dlg.Pulse("Loading the model...")
+            else:
+                keep = dlg.Update(min(int(1000 * k / n), 999),
+                                  f"Denoising... tile {k} of {n}")
+            if isinstance(keep, tuple):
+                keep = keep[0]
+            if not keep and not cancelling:
+                cancelling = True
+                e.cancel()
+            wx.MilliSleep(50)
+            wx.YieldIfNeeded()
+        dlg.Destroy()
+        kind, args = state['out']
+        if kind == 'done':
+            self._denoise_done(*args, model)
+        elif isinstance(args[0], denoise.Cancelled):
+            self._set_busy(False)
+            self.statusbar.SetStatusText("Denoising cancelled")
+        else:
+            self._denoise_failed(args[0])
+
+    def _ensure_model(self, tier):
+        """Offer to download the model if its file is missing; return True
+        if the model is available."""
+        import download
+        e = self.engine
+        if e.options.model_file or tier not in config.DENOISE_MODELS:
+            return True
+        path = e.conf.get_denoise_model_file(tier)
+        if path.is_file():
+            return True
+        name, url, size, sha = config.DENOISE_MODELS[tier]
+        mb = f" (about {size / 1e6:.0f} MB)" if size else ""
+        dlg = wx.MessageDialog(
+            self, f"The '{tier}' denoising model ({name}) is not installed."
+            f"\n\nDownload it now{mb}?\n\nIt will be saved to:\n{path}",
+            "Model not found", wx.YES_NO | wx.YES_DEFAULT | wx.ICON_QUESTION)
+        dlg.SetYesNoLabels("Download", "Cancel")
+        if dlg.ShowModal() != wx.ID_YES:
+            self.statusbar.SetStatusText("Denoising cancelled: no model")
+            return False
+        total = size or 100
+        prog = wx.ProgressDialog(
+            "Downloading model", f"Downloading {name}...", maximum=1000,
+            parent=self, style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE |
+            wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
+        state = {'n': 0, 'total': total, 'done': False, 'abort': False,
+                 'error': None}
+
+        def work():
+            def progress(n, t):
+                state['n'] = n
+                state['total'] = t or total
+            try:
+                download.download(url, path, size, sha, progress,
+                                  lambda: state['abort'])
+            except BaseException as ex:
+                state['error'] = ex
+            state['done'] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        while not state['done']:
+            v = min(int(1000 * state['n'] / max(state['total'], 1)), 999)
+            keep = prog.Update(
+                v, f"Downloading {name}: {state['n'] / 1e6:.0f} of "
+                   f"{state['total'] / 1e6:.0f} MB")
+            if isinstance(keep, tuple):
+                keep = keep[0]
+            if not keep:
+                state['abort'] = True
+            wx.MilliSleep(100)
+            wx.YieldIfNeeded()
+        prog.Destroy()
+        if state['error'] is not None:
+            if not state['abort']:
+                wx.MessageDialog(
+                    self, f"Download failed:\n{state['error']}",
+                    "Download error", wx.OK | wx.ICON_ERROR).ShowModal()
+            self.statusbar.SetStatusText("Model download failed")
+            return False
+        self.statusbar.SetStatusText(f"Model downloaded to {path}")
+        return True
+
+    def _denoise_done(self, res, after, model):
+        self.engine.apply_result(res, after, model)
+        self._set_busy(False)
+        self.image_panel.show_result()
+        self.statusbar.SetStatusText(
+            f"Denoising done ({res.model} on {res.provider})")
+
+    def _denoise_failed(self, ex):
+        import traceback
+        traceback.print_exception(ex)
+        self._set_busy(False)
+        self.statusbar.SetStatusText("Denoising failed")
+        wx.MessageDialog(self, f"Denoising failed:\n{ex}", "Denoising error",
+                         wx.OK | wx.ICON_ERROR).ShowModal()
+
     def on_close(self, event):
         if self.engine.busy_now():
             return
@@ -764,13 +1151,16 @@ class MainFrame(wx.Frame):
             c.brush_radius = float(self.engine.radius)
             c.brush_feather = float(self.engine.feather)
             c.brush_opacity = float(self.engine.opacity)
+        if self.mode == 'denoise':
+            self.engine.conf.denoise_model = \
+                self.choice_model.GetStringSelection()
         self.engine.conf.save()
         event.Skip()
 
 # end of class MainFrame
 
 
-def main(conf, filename=None, mode='mask', outdir=None):
+def main(conf, filename=None, mode='mask', outdir=None, opts=None):
     app = wx.PyApp() if wx.Platform == '__WXMAC__' else wx.App()
     fn = config.Config.get_config_file()
     if not os.path.exists(fn):
@@ -784,6 +1174,9 @@ def main(conf, filename=None, mode='mask', outdir=None):
             if mode == 'heal':
                 import heal_engine
                 eng = heal_engine.AIHealingEngine(conf)
+            elif mode == 'denoise':
+                import denoise_engine
+                eng = denoise_engine.DenoiseEngine(conf, opts)
             else:
                 import engine
                 eng = engine.AIMaskingEngine(conf)

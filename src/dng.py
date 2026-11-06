@@ -1,0 +1,257 @@
+"""DNG input/output for raw denoising, on top of tifffile.
+
+Input is deliberately limited to what `ART-cli --raw-preprocess=mosaic`
+writes: a single-IFD, uncompressed, one-sample CFA (Bayer) DNG with 16-bit
+integer or 32-bit float samples, black level 0 and the data already cropped
+to the active area.  Other raw files (compressed, multi-IFD, with black
+levels, ...) are not supported: convert them first with ART-cli.
+
+ART writes no BlackLevel (black is 0) and no ActiveArea (the data are
+already cropped), so those tags are ignored; WhiteLevel is raised to the data
+maximum if the data exceed it.
+
+Output is a linear (LinearRaw) DNG 1.4, 16-bit integer or 32-bit float.
+"""
+
+import os
+import struct
+from dataclasses import dataclass
+
+import numpy as np
+
+import colorspace
+
+TAG_PHOTOMETRIC_CFA = 32803
+_ILLUMINANT_PREFERENCE = (21, 20, 23)   # D65, D55, D50
+
+
+class DNGError(Exception):
+    pass
+
+
+@dataclass
+class MosaicDNG:
+    levels: np.ndarray       # float32 HxW, 0 = black, 1 = white (may exceed 1)
+    cfa: np.ndarray          # 2x2, 0/1/2 = R/G/B at each position
+    white: float             # raw value that `levels` == 1 stands for
+    make: str | None
+    model: str | None
+    orientation: int         # TIFF orientation tag (1, 3, 6 or 8)
+    neutral: np.ndarray      # as-shot neutral, camera RGB (G = 1)
+    xyz_cam: np.ndarray      # 3x3, XYZ (D65) -> camera RGB
+    path: str
+
+    @property
+    def name(self):
+        return os.path.basename(self.path)
+
+    @property
+    def gains(self):
+        """White-balance gains (G = 1) for the as-shot illuminant."""
+        g = 1.0 / np.maximum(self.neutral, 1e-6)
+        return g / g[1]
+
+
+def _floats(tag):
+    v = np.asarray(tag.value, np.float64).ravel()
+    if int(tag.dtype) in (5, 10):        # (numerator, denominator) pairs
+        v = v[0::2] / v[1::2]
+    return v
+
+
+def _tag(page, name):
+    t = page.tags.get(name)
+    return None if t is None else t.value
+
+
+def _color_matrix(page):
+    """XYZ -> camera matrix, preferring a D65-ish calibration."""
+    cands = []
+    for k in (1, 2):
+        t = page.tags.get(f'ColorMatrix{k}')
+        if t is None:
+            continue
+        m = _floats(t)
+        if m.size != 9:
+            continue
+        ill = _tag(page, f'CalibrationIlluminant{k}')
+        cands.append((int(ill) if ill is not None else 0, m.reshape(3, 3)))
+    for want in _ILLUMINANT_PREFERENCE:
+        for ill, m in cands:
+            if ill == want:
+                return m
+    if cands:
+        return cands[0][1]
+    # no matrix: pretend the camera is sRGB
+    return np.linalg.inv(colorspace._SRGB_TO_XYZ)
+
+
+def read_mosaic_dng(path):
+    import tifffile
+    path = str(path)
+    try:
+        tf = tifffile.TiffFile(path)
+    except Exception as e:
+        raise DNGError(f'cannot read {path}: {e}') from e
+    with tf:
+        page = tf.pages[0]
+        if 'DNGVersion' not in page.tags:
+            raise DNGError('not a DNG file')
+        if int(page.photometric) != TAG_PHOTOMETRIC_CFA:
+            raise DNGError(
+                'not a mosaiced (CFA) DNG; create one with '
+                '`ART-cli --raw-preprocess=mosaic`')
+        if page.samplesperpixel != 1 or int(page.compression) != 1 \
+           or page.dtype.kind not in 'uf' or page.dtype.itemsize < 2:
+            raise DNGError(
+                'unsupported DNG: only uncompressed 16-bit integer or '
+                '32-bit float mosaics are supported; create one with '
+                '`ART-cli --raw-preprocess=mosaic`')
+        dim = _tag(page, 'CFARepeatPatternDim')
+        pat = _tag(page, 'CFAPattern')
+        if dim is None or pat is None or tuple(dim) != (2, 2) \
+           or len(pat) != 4:
+            raise DNGError('not a 2x2 Bayer mosaic (X-Trans is not '
+                           'supported by the model)')
+        planes = _tag(page, 'CFAPlaneColor')
+        planes = list(planes) if planes is not None else [0, 1, 2]
+        try:
+            idx = [planes[c] for c in bytes(pat)]
+        except IndexError:
+            raise DNGError('invalid CFA pattern') from None
+        if set(idx) - {0, 1, 2}:
+            raise DNGError('unsupported colour filter: the model reads '
+                           'RGB Bayer only')
+        cfa = np.array(idx).reshape(2, 2)
+        data = page.asarray()
+        orientation = int(_tag(page, 'Orientation') or 1)
+        make, model = _tag(page, 'Make'), _tag(page, 'Model')
+        xyz_cam = _color_matrix(page)
+        nt = page.tags.get('AsShotNeutral')
+        neutral = _floats(nt) if nt is not None else np.ones(3)
+        if neutral.size != 3 or (neutral <= 0).any():
+            neutral = np.ones(3)
+        wl = _tag(page, 'WhiteLevel')
+    if data.shape[0] < 4 or data.shape[1] < 4:
+        raise DNGError('raw image too small')
+    if data.dtype.kind == 'f':
+        nominal = 1.0
+    else:
+        nominal = float(np.atleast_1d(wl)[0]) if wl is not None \
+            else float(np.iinfo(data.dtype).max)
+    white = max(nominal, float(data.max()))
+    if white <= 0:
+        raise DNGError('empty image')
+    levels = np.maximum(data.astype(np.float32) / np.float32(white), 0.0)
+    return MosaicDNG(levels=levels, cfa=cfa, white=white, make=make,
+                     model=model,
+                     orientation=orientation if orientation in (3, 6, 8)
+                     else 1,
+                     neutral=neutral / neutral[1],
+                     xyz_cam=np.asarray(xyz_cam, np.float64), path=path)
+
+
+def apply_orientation(img, orientation):
+    """Rotate an HxW(x...) array upright, given the TIFF orientation."""
+    if orientation == 3:
+        return np.rot90(img, 2)
+    if orientation == 6:
+        return np.rot90(img, -1)
+    if orientation == 8:
+        return np.rot90(img, 1)
+    return img
+
+
+# --------------------------------------------------------------------------
+# Linear DNG output (DNG 1.4, LinearRaw)
+
+_BYTE, _ASCII, _SHORT, _LONG, _RATIONAL, _SRATIONAL = 1, 2, 3, 4, 5, 10
+_FMT = {_BYTE: "B", _SHORT: "H", _LONG: "I"}
+
+
+def _entry(tag, typ, values):
+    """A TIFF IFD entry as (tag, type, count, payload bytes)."""
+    if typ == _ASCII:
+        data = values.encode("ascii", "replace") + b"\0"
+        return tag, typ, len(data), data
+    if typ in (_RATIONAL, _SRATIONAL):
+        fmt = "<II" if typ == _RATIONAL else "<ii"
+        return (tag, typ, len(values),
+                b"".join(struct.pack(fmt, n, dn) for n, dn in values))
+    return (tag, typ, len(values),
+            struct.pack("<%d%s" % (len(values), _FMT[typ]), *values))
+
+
+def _rational(x, den=10000):
+    return int(round(x * den)), den
+
+
+def write_linear_dng(path, rgb, *, make, model, xyz_cam, neutral,
+                     orientation=1, software="SMART", bits=16):
+    """Write an HxWx3 float32 linear image as a LinearRaw DNG: 32-bit float
+    (`bits=32`) or 16-bit unsigned integer (`bits=16`, white = 65535,
+    negatives clipped).
+
+    `xyz_cam`: 3x3 XYZ(D65) -> camera RGB matrix (DNG ColorMatrix1);
+    `neutral`: the camera's response to the as-shot neutral (AsShotNeutral).
+    The data are camera RGB with black at 0 and white at 1."""
+    if bits == 16:
+        rgb = np.ascontiguousarray(
+            np.rint(np.clip(rgb, 0.0, 1.0) * 65535.0), dtype="<u2")
+    else:
+        rgb = np.ascontiguousarray(rgb, dtype="<f4")
+    h, w, _ = rgb.shape
+    unique = f"{make} {model}".strip() if make else (model or "SMART")
+    e = [
+        _entry(254, _LONG, [0]),
+        _entry(256, _LONG, [w]),
+        _entry(257, _LONG, [h]),
+        _entry(258, _SHORT, [bits] * 3),
+        _entry(259, _SHORT, [1]),
+        _entry(262, _SHORT, [34892]),  # LinearRaw
+        _entry(271, _ASCII, make or ""),
+        _entry(272, _ASCII, model or "SMART"),
+        _entry(274, _SHORT, [orientation]),
+        _entry(277, _SHORT, [3]),
+        _entry(278, _LONG, [h]),
+        _entry(284, _SHORT, [1]),
+        _entry(305, _ASCII, software),
+        _entry(339, _SHORT, [3 if bits == 32 else 1] * 3),
+        _entry(50706, _BYTE, [1, 4, 0, 0]),
+        _entry(50707, _BYTE, [1, 4, 0, 0]),
+        _entry(50708, _ASCII, unique),
+        _entry(50714, _RATIONAL, [(0, 1)] * 3),
+        _entry(50717, _LONG, [1 if bits == 32 else 65535]),
+        _entry(50721, _SRATIONAL,
+               [_rational(v) for v in np.asarray(xyz_cam).reshape(9)]),
+        _entry(50728, _RATIONAL,
+               [_rational(v, 1000000) for v in neutral]),
+        _entry(50778, _SHORT, [21]),  # CalibrationIlluminant1 = D65
+    ]
+    # StripOffsets / StripByteCounts need the final layout: IFD, then the
+    # out-of-line values, then the pixel data (4-aligned).
+    e += [(273, _LONG, 1, b"\0\0\0\0"),
+          (279, _LONG, 1, struct.pack("<I", rgb.nbytes))]
+    e.sort(key=lambda t: t[0])
+    ifd_size = 2 + 12 * len(e) + 4
+    extra = sum((len(d) + 1) & ~1 for _, _, _, d in e if len(d) > 4)
+    data_off = (8 + ifd_size + extra + 3) & ~3
+    out = bytearray(b"II*\0" + struct.pack("<I", 8)
+                    + struct.pack("<H", len(e)))
+    spill = bytearray()
+    spill_base = 8 + ifd_size
+    for tag, typ, count, data in e:
+        if tag == 273:
+            data = struct.pack("<I", data_off)
+        if len(data) <= 4:
+            out += struct.pack("<HHI", tag, typ, count) + data.ljust(4, b"\0")
+        else:
+            out += struct.pack("<HHII", tag, typ, count,
+                               spill_base + len(spill))
+            spill += data + (b"\0" if len(data) & 1 else b"")
+    out += struct.pack("<I", 0)
+    out += spill
+    out += b"\0" * (data_off - len(out))
+    with open(path, "wb") as f:
+        f.write(out)
+        rgb.tofile(f)

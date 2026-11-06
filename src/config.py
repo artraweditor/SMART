@@ -41,6 +41,22 @@ HEAL_MODELS = {
     ),
 }
 
+# model registry for raw denoising (greycard's models, GPL-3.0):
+# tier -> (file name, url, size, sha256)
+_DENOISE_URL = 'https://huggingface.co/jessolmstead/greycard-denoise/resolve/main/'
+DENOISE_MODELS = {
+    'fast': ('denoise-v19.onnx', _DENOISE_URL + 'denoise-v19.onnx',
+             4_932_834,
+             '319d024a39d3e31c95e99c91bb5c089691707cbf13f4f077c1c6e49d10235c49'),
+    'balanced': ('denoise-v15.onnx', _DENOISE_URL + 'denoise-v15.onnx',
+                 9_037_296,
+                 'f5845119e0b0ee63c57aad38129aed1c8925e60ec9b7838c6b7a0fa23a84a546'),
+    'best': ('denoise-v20.onnx', _DENOISE_URL + 'denoise-v20.onnx',
+             20_297_204,
+             'c20aed71a45b2a984570e09d8456c54ce8eff43a334b54c7ebb480c21518f9be'),
+}
+
+
 @dataclasses.dataclass
 class Config:
     device: str = "cpu"
@@ -59,6 +75,13 @@ class Config:
     heal_seam_match: bool = True
     heal_even: bool = True
     heal_regrain: bool = True
+    # raw denoising
+    denoise_model: str = "balanced"     # a key of DENOISE_MODELS
+    denoise_backend: str = "onnxruntime"  # or "torch"
+    denoise_provider: str = "auto"      # onnxruntime provider / torch device
+    denoise_tile: int = 1024
+    denoise_margin: int = 96
+    denoise_dng_bits: int = 16          # 16 (integer) or 32 (float) DNG output
     brush_radius: float = 30.0
     brush_feather: float = 0.3
     brush_opacity: float = 1.0
@@ -87,6 +110,9 @@ class Config:
 
     def get_heal_model_file(self, backend):
         return Path(__file__).parent / '../models/' / HEAL_MODELS[backend][0]
+
+    def get_denoise_model_file(self, tier):
+        return Config.models_dir() / DENOISE_MODELS[tier][0]
 
     @staticmethod
     def get_config_file(legacy=False):
