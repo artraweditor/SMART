@@ -10,10 +10,11 @@ def getopts():
     p = argparse.ArgumentParser()
     p.add_argument('--init-config', action='store_true',
                    help='(re)-create an initial configuration file and exit')
-    p.add_argument('--mode', choices=['mask', 'heal', 'denoise'], default='mask',
-                   help='mask: AI mask builder (default); '
+    p.add_argument('--mode', choices=['mask', 'heal', 'denoise'],
+                   help='mask: AI mask builder; '
                    'heal: AI-assisted healing; '
-                   'denoise: raw denoising of a mosaiced DNG')
+                   'denoise: raw denoising of a mosaiced DNG. '
+                   'If not given, the GUI asks which mode to use')
     p.add_argument('--download-heal-model', nargs='?', const='auto',
                    choices=['auto', 'onnx', 'torch'], metavar='BACKEND',
                    help='download the LaMa model used by the healing mode '

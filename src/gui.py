@@ -551,10 +551,8 @@ class MainFrame(wx.Frame):
         super().__init__(None, title=title + " - v" + config.version,
                          size=conf.window_size)
 
-        icon_path = \
-            config.resource_dir() / 'icons' / 'app-icon.png'
-        if icon_path.exists():
-            icon = wx.Icon(str(icon_path), wx.BITMAP_TYPE_PNG)
+        icon = app_icon()
+        if icon is not None:
             self.SetIcon(icon)
 
         self.engine = engine
@@ -1194,49 +1192,112 @@ def ensure_mode_model(conf, mode):
     return ensure_model_file(None, what, name, path, url, size, sha) is True
 
 
-def main(conf, filename=None, mode='mask', outdir=None, opts=None):
+def app_icon():
+    """The application icon, or None if it cannot be loaded."""
+    icon_path = config.resource_dir() / 'icons' / 'app-icon.png'
+    if not icon_path.exists():
+        return None
+    icon = wx.Icon(str(icon_path), wx.BITMAP_TYPE_PNG)
+    return icon if icon.IsOk() else None
+
+
+_dock_icon = None   # keep a reference, or the icon is garbage collected
+
+
+def set_dock_icon():
+    """macOS: replace the generic Python icon in the Dock (when run as a
+    script, rather than from an application bundle) with ours."""
+    global _dock_icon
+    icon = app_icon()
+    if wx.Platform != '__WXMAC__' or icon is None:
+        return
+    try:
+        from wx.adv import TaskBarIcon, TBI_DOCK
+        _dock_icon = TaskBarIcon(TBI_DOCK)
+        _dock_icon.SetIcon(icon)
+    except Exception:
+        pass
+
+
+def ask_mode():
+    """Ask which mode to use; return None if the dialog is cancelled."""
+    modes = [('mask', "AI masking: build a mask from clicks"),
+             ('heal', "AI healing: remove objects (generative fill)"),
+             ('denoise', "Raw denoising of a mosaiced DNG")]
+    # (wx.SingleChoiceDialog has a broken layout on macOS: use plain sizers)
+    dlg = wx.Dialog(None, title="SMART")
+    icon = app_icon()
+    if icon is not None:
+        dlg.SetIcon(icon)
+    sizer = wx.BoxSizer(wx.VERTICAL)
+    sizer.Add(wx.StaticText(dlg, label="Select the mode to use:"),
+              0, wx.ALL, 12)
+    radios = []
+    for i, (_, label) in enumerate(modes):
+        r = wx.RadioButton(dlg, label=label,
+                           style=wx.RB_GROUP if i == 0 else 0)
+        radios.append(r)
+        sizer.Add(r, 0, wx.LEFT | wx.RIGHT | wx.BOTTOM, 12)
+    radios[0].SetValue(True)
+    btns = dlg.CreateStdDialogButtonSizer(wx.OK | wx.CANCEL)
+    sizer.Add(btns, 0, wx.EXPAND | wx.ALL, 12)
+    dlg.SetSizerAndFit(sizer)
+    dlg.CentreOnScreen()
+    try:
+        if dlg.ShowModal() != wx.ID_OK:
+            return None
+        return next(m for (m, _), r in zip(modes, radios) if r.GetValue())
+    finally:
+        dlg.Destroy()
+
+
+def main(conf, filename=None, mode=None, outdir=None, opts=None):
     app = wx.PyApp() if wx.Platform == '__WXMAC__' else wx.App()
+    set_dock_icon()
     fn = config.Config.get_config_file()
     if not os.path.exists(fn):
         conf.save()
         wx.MessageDialog(None, f"Configuration file created in:\n{fn}\n"
-                         "Please adjust the settings to your "
-                         "environment and run again",
+                         "You can adjust the settings to your "
+                         "environment later.",
                          "Initial configuration", wx.OK).ShowModal()
-    else:
-        try:
-            if not ensure_mode_model(conf, mode):
-                return
-            if mode == 'heal':
-                import heal_engine
-                eng = heal_engine.AIHealingEngine(conf)
-            elif mode == 'denoise':
-                import denoise_engine
-                eng = denoise_engine.DenoiseEngine(conf, opts)
-            else:
-                import engine
-                eng = engine.AIMaskingEngine(conf)
-            frame = MainFrame(conf, eng, mode, outdir)
-            def fixgeom():
-                x, y = frame.GetPosition()
-                w, h = frame.GetSize()
-                r = wx.GetClientDisplayRect()
-                w = min(w, r.GetWidth())
-                h = min(h, r.GetHeight())
-                x = max(x, r.GetX())
-                y = max(y, r.GetY())
-                frame.SetPosition((x, y))
-                frame.SetSize((w, h))
-                frame.Raise()
-                frame.Show()
-            wx.CallAfter(fixgeom)
-            if filename is not None:
-                wx.CallAfter(lambda : frame.load_image(filename))
-            app.MainLoop()
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            wx.MessageDialog(None, f"Fatal error:\n{e}\n"
-                             f"Please check your configuration file in {fn}",
-                             "Error",
-                             wx.OK | wx.ICON_ERROR).ShowModal()
+    if mode is None:
+        mode = ask_mode()
+        if mode is None:
+            return
+    try:
+        if not ensure_mode_model(conf, mode):
+            return
+        if mode == 'heal':
+            import heal_engine
+            eng = heal_engine.AIHealingEngine(conf)
+        elif mode == 'denoise':
+            import denoise_engine
+            eng = denoise_engine.DenoiseEngine(conf, opts)
+        else:
+            import engine
+            eng = engine.AIMaskingEngine(conf)
+        frame = MainFrame(conf, eng, mode, outdir)
+        def fixgeom():
+            x, y = frame.GetPosition()
+            w, h = frame.GetSize()
+            r = wx.GetClientDisplayRect()
+            w = min(w, r.GetWidth())
+            h = min(h, r.GetHeight())
+            x = max(x, r.GetX())
+            y = max(y, r.GetY())
+            frame.SetPosition((x, y))
+            frame.SetSize((w, h))
+            frame.Raise()
+            frame.Show()
+        wx.CallAfter(fixgeom)
+        if filename is not None:
+            wx.CallAfter(lambda : frame.load_image(filename))
+        app.MainLoop()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        wx.MessageDialog(None, f"Fatal error:\n{e}\n"
+                         f"Please check your configuration file in {fn}",
+                         "Error",
+                         wx.OK | wx.ICON_ERROR).ShowModal()

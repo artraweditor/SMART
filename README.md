@@ -17,8 +17,9 @@ modes:
   learned raw-domain denoiser, with a before/after preview, either from
   the GUI or from the command line.
 
-The mode is selected with the `--mode` command-line switch: `--mode mask`
-(the default), `--mode heal` or `--mode denoise`.
+The mode is selected with the `--mode` command-line switch: `--mode mask`,
+`--mode heal` or `--mode denoise`. If the switch is not given, the GUI asks
+which mode to use when it starts.
 
 ## Prerequisites
 
