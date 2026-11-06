@@ -51,15 +51,20 @@ jobs:
           # CPU-only PyTorch: the CUDA wheels would make the bundle huge
           "$PY" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           # sam2 builds against the already-installed torch; skip the CUDA extension
-          SAM2_BUILD_CUDA=0 "$PY" -m pip install --no-build-isolation \
+          # wxPython has no Linux wheels on PyPI: take the prebuilt one from the
+          # wxPython extras server (slow at times, hence the long timeout and
+          # retries). --only-binary: never fall back to a (failing) source build.
+          "$PY" -m pip install --only-binary wxPython --timeout 120 --retries 10 \
             --find-links https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-22.04/ \
+            wxPython
+          SAM2_BUILD_CUDA=0 "$PY" -m pip install --no-build-isolation \
             -r requirements.txt
           "$PY" -m pip install pyinstaller
 
       - name: Get ExifTool
         run: |
-          VER=$(curl -fsSL https://exiftool.org/ver.txt)
-          curl -fsSL -o exiftool.tar.gz "https://exiftool.org/Image-ExifTool-${VER}.tar.gz"
+          VER=$(curl -fsSL https://exiftool.org/ver.txt )
+          curl -fsSL -o exiftool.tar.gz "https://sourceforge.net/projects/exiftool/files/Image-ExifTool-${VER}.tar.gz/download"
           tar -xzf exiftool.tar.gz
           # Perl distribution (needs perl on the target; run via its shebang)
           mkdir -p exiftool-bundle

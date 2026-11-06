@@ -48,8 +48,8 @@ jobs:
 
       - name: Get ExifTool
         run: |
-          VER=$(curl -fsSL https://exiftool.org/ver.txt)
-          curl -fsSL -o exiftool.tar.gz "https://exiftool.org/Image-ExifTool-${VER}.tar.gz"
+          VER=$(curl -fsSL https://exiftool.org/ver.txt )
+          curl -fsSL -o exiftool.tar.gz "https://sourceforge.net/projects/exiftool/files/Image-ExifTool-${VER}.tar.gz/download"
           tar -xzf exiftool.tar.gz
           # Perl distribution (needs perl on the target; run via its shebang)
           mkdir -p exiftool-bundle

@@ -52,8 +52,8 @@ jobs:
 
       - name: Get ExifTool
         run: |
-          VER=$(curl -fsSL https://exiftool.org/ver.txt)
-          curl -fsSL -o exiftool.zip "https://exiftool.org/exiftool-${VER}_64.zip"
+          VER=$(curl -fsSL https://exiftool.org/ver.txt )
+          curl -fsSL -o exiftool.zip "https://sourceforge.net/projects/exiftool/files/exiftool-${VER}_64.zip/download"
           7z x exiftool.zip -oexiftool-unzipped
           # self-contained Windows executable + its exiftool_files directory
           mkdir -p exiftool-bundle
