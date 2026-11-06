@@ -75,7 +75,18 @@ jobs:
             --add-data "exiftool-bundle;exiftool" \
             --collect-all sam2 --collect-all hydra --collect-all omegaconf \
             --collect-submodules imagecodecs --collect-binaries onnxruntime \
+            --exclude-module tkinter --exclude-module matplotlib \
+            --exclude-module IPython --exclude-module pytest \
+            --exclude-module torch.utils.tensorboard \
             src/main.py
+
+      - name: Size report
+        run: |
+          du -sh dist/SMART
+          echo "--- largest top-level items"
+          du -sh dist/SMART/_internal/* | sort -rh | head -15
+          echo "--- largest files"
+          find dist/SMART -type f -size +20M -exec du -m {} + | sort -rn | head -25
 
       - name: Smoke test
         shell: pwsh
@@ -92,7 +103,7 @@ jobs:
           VERSION=$("$PY" -c "import re;print(re.search(r\"version = '([^']+)'\", open('src/config.py').read()).group(1))")
           NAME="SMART-${VERSION}-windows-x64"
           mv dist/SMART "dist/${NAME}"
-          (cd dist && 7z a -tzip -mx=5 "../${NAME}.zip" "${NAME}")
+          (cd dist && 7z a -tzip -mx=9 -mfb=257 -mpass=15 "../${NAME}.zip" "${NAME}")
           echo "file=${NAME}.zip" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
