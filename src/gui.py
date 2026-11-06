@@ -1057,64 +1057,18 @@ class MainFrame(wx.Frame):
     def _ensure_model(self, tier):
         """Offer to download the model if its file is missing; return True
         if the model is available."""
-        import download
         e = self.engine
         if e.options.model_file or tier not in config.DENOISE_MODELS:
             return True
-        path = e.conf.get_denoise_model_file(tier)
-        if path.is_file():
-            return True
         name, url, size, sha = config.DENOISE_MODELS[tier]
-        mb = f" (about {size / 1e6:.0f} MB)" if size else ""
-        dlg = wx.MessageDialog(
-            self, f"The '{tier}' denoising model ({name}) is not installed."
-            f"\n\nDownload it now{mb}?\n\nIt will be saved to:\n{path}",
-            "Model not found", wx.YES_NO | wx.YES_DEFAULT | wx.ICON_QUESTION)
-        dlg.SetYesNoLabels("Download", "Cancel")
-        if dlg.ShowModal() != wx.ID_YES:
+        path = e.conf.get_denoise_model_file(tier)
+        ok = ensure_model_file(self, f"The '{tier}' denoising model", name,
+                               path, url, size, sha)
+        if ok is None:
             self.statusbar.SetStatusText("Denoising cancelled: no model")
-            return False
-        total = size or 100
-        prog = wx.ProgressDialog(
-            "Downloading model", f"Downloading {name}...", maximum=1000,
-            parent=self, style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE |
-            wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
-        state = {'n': 0, 'total': total, 'done': False, 'abort': False,
-                 'error': None}
-
-        def work():
-            def progress(n, t):
-                state['n'] = n
-                state['total'] = t or total
-            try:
-                download.download(url, path, size, sha, progress,
-                                  lambda: state['abort'])
-            except BaseException as ex:
-                state['error'] = ex
-            state['done'] = True
-
-        threading.Thread(target=work, daemon=True).start()
-        while not state['done']:
-            v = min(int(1000 * state['n'] / max(state['total'], 1)), 999)
-            keep = prog.Update(
-                v, f"Downloading {name}: {state['n'] / 1e6:.0f} of "
-                   f"{state['total'] / 1e6:.0f} MB")
-            if isinstance(keep, tuple):
-                keep = keep[0]
-            if not keep:
-                state['abort'] = True
-            wx.MilliSleep(100)
-            wx.YieldIfNeeded()
-        prog.Destroy()
-        if state['error'] is not None:
-            if not state['abort']:
-                wx.MessageDialog(
-                    self, f"Download failed:\n{state['error']}",
-                    "Download error", wx.OK | wx.ICON_ERROR).ShowModal()
+        elif not ok:
             self.statusbar.SetStatusText("Model download failed")
-            return False
-        self.statusbar.SetStatusText(f"Model downloaded to {path}")
-        return True
+        return bool(ok)
 
     def _denoise_done(self, res, after, model):
         self.engine.apply_result(res, after, model)
@@ -1160,6 +1114,86 @@ class MainFrame(wx.Frame):
 # end of class MainFrame
 
 
+def ensure_model_file(parent, what, name, path, url, size, sha):
+    """If the model file `path` is missing, ask whether to download it (with
+    a modal progress dialog).  Returns True if the file is available (or has
+    just been downloaded), None if the user declined, False if the download
+    failed or was aborted."""
+    import download
+    path = Path(path)
+    if path.is_file():
+        return True
+    mb = f" (about {size / 1e6:.0f} MB)" if size else ""
+    dlg = wx.MessageDialog(
+        parent, f"{what} ({name}) is not installed.\n\n"
+        f"Download it now{mb}?\n\nIt will be saved to:\n{path}",
+        "Model not found", wx.YES_NO | wx.YES_DEFAULT | wx.ICON_QUESTION)
+    dlg.SetYesNoLabels("Download", "Cancel")
+    if dlg.ShowModal() != wx.ID_YES:
+        return None
+    total = size or 100
+    prog = wx.ProgressDialog(
+        "Downloading model", f"Downloading {name}...", maximum=1000,
+        parent=parent, style=wx.PD_APP_MODAL | wx.PD_AUTO_HIDE |
+        wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME | wx.PD_REMAINING_TIME)
+    state = {'n': 0, 'total': total, 'done': False, 'abort': False,
+             'error': None}
+
+    def work():
+        def progress(n, t):
+            state['n'] = n
+            state['total'] = t or total
+        try:
+            download.download(url, path, size, sha, progress,
+                              lambda: state['abort'])
+        except BaseException as ex:
+            state['error'] = ex
+        state['done'] = True
+
+    threading.Thread(target=work, daemon=True).start()
+    while not state['done']:
+        v = min(int(1000 * state['n'] / max(state['total'], 1)), 999)
+        keep = prog.Update(
+            v, f"Downloading {name}: {state['n'] / 1e6:.0f} of "
+               f"{state['total'] / 1e6:.0f} MB")
+        if isinstance(keep, tuple):
+            keep = keep[0]
+        if not keep:
+            state['abort'] = True
+        wx.MilliSleep(100)
+        wx.YieldIfNeeded()
+    prog.Destroy()
+    if state['error'] is not None:
+        if not state['abort']:
+            wx.MessageDialog(
+                parent, f"Download failed:\n{state['error']}",
+                "Download error", wx.OK | wx.ICON_ERROR).ShowModal()
+        return False
+    return True
+
+
+def ensure_mode_model(conf, mode):
+    """Before starting: offer to download the model needed by `mode` (mask
+    or heal) if it is missing.  Returns False if the program should not go on."""
+    if mode == 'mask':
+        found = [m for m in config.MASK_MODELS.values()
+                 if m[0] == conf.model]
+        if not found:        # a custom model: nothing we can download
+            return True
+        name, url, size, sha = found[0]
+        what = "The SAM2 masking model"
+        path = conf.get_model_file()
+    elif mode == 'heal':
+        import lama
+        backend = lama.resolve_backend_name(conf)
+        name, url, size, sha = config.HEAL_MODELS[backend]
+        what = "The LaMa healing model"
+        path = conf.get_heal_model_file(backend)
+    else:
+        return True
+    return ensure_model_file(None, what, name, path, url, size, sha) is True
+
+
 def main(conf, filename=None, mode='mask', outdir=None, opts=None):
     app = wx.PyApp() if wx.Platform == '__WXMAC__' else wx.App()
     fn = config.Config.get_config_file()
@@ -1171,6 +1205,8 @@ def main(conf, filename=None, mode='mask', outdir=None, opts=None):
                          "Initial configuration", wx.OK).ShowModal()
     else:
         try:
+            if not ensure_mode_model(conf, mode):
+                return
             if mode == 'heal':
                 import heal_engine
                 eng = heal_engine.AIHealingEngine(conf)

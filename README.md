@@ -57,7 +57,9 @@ for a CUDA-capable GPU, `"mps"` for the GPU on an ARM Apple machine, or
 `"cpu"` otherwise (this might be slow though).
 
 Then download the model(s) for the mode(s) you want to use. They are put
-in the `models/` directory.
+in the `models/` directory. (In the GUI, if the model of the selected mode
+is missing, SMART offers to download it when it starts, or, in denoise mode,
+when you press the Denoise button.)
 
 ### AI masking
 
