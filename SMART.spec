@@ -3,12 +3,14 @@
 #   SMART.exe          windowed (no console), for double-clicking
 #   SMART-console.exe  console subsystem, for use from cmd/PowerShell/scripts
 # Paths are relative to this file; run from the repository root.
-from PyInstaller.utils.hooks import collect_submodules, collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_dynamic_libs
 
 datas = [('icons', 'icons'), ('data', 'data'), ('exiftool-bundle', 'exiftool')]
 binaries = []
 hiddenimports = []
-hiddenimports += collect_submodules('imagecodecs')
+# imagecodecs: only what tifffile and the 16-bit PNG code (imgio.py) use
+hiddenimports += ['imagecodecs._imcd', 'imagecodecs._png', 'imagecodecs._shared',
+                  'imagecodecs._shared_cython']
 binaries += collect_dynamic_libs('onnxruntime')
 
 a = Analysis(
@@ -18,7 +20,12 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     excludes=['tkinter', 'matplotlib', 'IPython', 'pytest',
-              'torch', 'torchvision', 'sam2', 'hydra', 'omegaconf'],
+              'torch', 'torchvision', 'sam2', 'hydra', 'omegaconf']
+    # only scipy.ndimage (and what it imports) is used
+    + ['scipy.' + m for m in (
+        'fft', 'integrate', 'interpolate', 'optimize', 'sparse', 'spatial',
+        'stats', 'signal', 'io', 'cluster', 'constants', 'datasets',
+        'differentiate', 'odr')],
 )
 pyz = PYZ(a.pure)
 

@@ -68,8 +68,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p pbs
+          # the stripped build (the other one has debug info: libpython was 114 MB)
           gh release download $PBS_TAG --repo astral-sh/python-build-standalone \
-            --pattern "cpython-${PYTHON_VERSION}.*-${PBS_TRIPLE}-install_only.tar.gz" \
+            --pattern "cpython-${PYTHON_VERSION}.*-${PBS_TRIPLE}-install_only_stripped.tar.gz" \
             --dir pbs
           tar -xzf pbs/*.tar.gz -C pbs
           echo "PY=$PWD/pbs/python/bin/python3" >> "$GITHUB_ENV"
@@ -108,6 +109,15 @@ jobs:
           "$PY" -m pip install -r requirements.txt
           "$PY" -m pip install pyinstaller
 
+      - name: Strip the wxPython libraries
+        # the wxPython wheels are built with debug info: wx/_core.so alone is
+        # 171 MB
+        run: |
+          WX=$("$PY" -c "import os, wx; print(os.path.dirname(wx.__file__))")
+          du -sh "$WX"
+          find "$WX" -name '*.so*' -type f -exec strip --strip-unneeded {} +
+          du -sh "$WX"
+
       - name: Get ExifTool
         run: |
           VER=$(curl -fsSL https://exiftool.org/ver.txt )
@@ -121,6 +131,9 @@ jobs:
           exiftool-bundle/exiftool -ver
 
       - name: Build with PyInstaller
+        # Trimmed bundle: of imagecodecs only the modules used by tifffile and
+        # by the 16-bit PNG code (imgio.py) are included, and of scipy only
+        # scipy.ndimage and what it imports; no tkinter, torch or torchvision
         run: |
           "$PY" -m PyInstaller --noconfirm --clean --name SMART \
             --paths src \
@@ -128,8 +141,14 @@ jobs:
             --add-data "icons:icons" \
             --add-data "data:data" \
             --add-data "exiftool-bundle:exiftool" \
-            --collect-submodules imagecodecs --collect-binaries onnxruntime \
+            --collect-binaries onnxruntime \
             --exclude-module torch --exclude-module torchvision \
+            --exclude-module tkinter \
+            --hidden-import imagecodecs._imcd --hidden-import imagecodecs._png \
+            --hidden-import imagecodecs._shared --hidden-import imagecodecs._shared_cython \
+            --exclude-module scipy.fft --exclude-module scipy.integrate --exclude-module scipy.interpolate --exclude-module scipy.optimize --exclude-module scipy.sparse \
+            --exclude-module scipy.spatial --exclude-module scipy.stats --exclude-module scipy.signal --exclude-module scipy.io --exclude-module scipy.cluster \
+            --exclude-module scipy.constants --exclude-module scipy.datasets --exclude-module scipy.differentiate --exclude-module scipy.odr \
             src/main.py
 
       - name: Size report

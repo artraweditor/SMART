@@ -79,6 +79,9 @@ jobs:
           fi
 
       - name: Build with PyInstaller
+        # Trimmed bundle: of imagecodecs only the modules used by tifffile and
+        # by the 16-bit PNG code (imgio.py) are included, and of scipy only
+        # scipy.ndimage and what it imports; no tkinter, torch or torchvision
         run: |
           "$PY" -m PyInstaller --noconfirm --clean --name SMART \
             --windowed \
@@ -88,8 +91,14 @@ jobs:
             --add-data "icons:icons" \
             --add-data "data:data" \
             --add-data "exiftool-bundle:exiftool" \
-            --collect-submodules imagecodecs --collect-binaries onnxruntime \
+            --collect-binaries onnxruntime \
             --exclude-module torch --exclude-module torchvision \
+            --exclude-module tkinter \
+            --hidden-import imagecodecs._imcd --hidden-import imagecodecs._png \
+            --hidden-import imagecodecs._shared --hidden-import imagecodecs._shared_cython \
+            --exclude-module scipy.fft --exclude-module scipy.integrate --exclude-module scipy.interpolate --exclude-module scipy.optimize --exclude-module scipy.sparse \
+            --exclude-module scipy.spatial --exclude-module scipy.stats --exclude-module scipy.signal --exclude-module scipy.io --exclude-module scipy.cluster \
+            --exclude-module scipy.constants --exclude-module scipy.datasets --exclude-module scipy.differentiate --exclude-module scipy.odr \
             src/main.py
 
       - name: Add the Liquid Glass icon
