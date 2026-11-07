@@ -78,6 +78,12 @@ def getopts():
     p.add_argument('--outdir', metavar='DIR',
                    help='default directory for the save dialog (default: '
                    'the directory of the input image)')
+    p.add_argument('--save-as', metavar='FILE',
+                   help='default save name (for all modes): Save writes to '
+                   'FILE at once, without the file dialog (which is shown '
+                   'only if FILE already exists), and the Open button is '
+                   'hidden. The extension selects the output format in '
+                   'denoise mode. Meant for integration with ART')
     p.add_argument('input_file', nargs='?',
                    help='input image')
     opts = p.parse_args()
@@ -87,6 +93,10 @@ def getopts():
         opts.outdir = os.path.abspath(os.path.expanduser(opts.outdir))
         if not os.path.isdir(opts.outdir):
             p.error(f'--outdir: not a directory: {opts.outdir}')
+    if opts.save_as is not None:
+        opts.save_as = os.path.abspath(os.path.expanduser(opts.save_as))
+        if os.path.isdir(opts.save_as):
+            p.error(f'--save-as: is a directory: {opts.save_as}')
     return opts
 
 

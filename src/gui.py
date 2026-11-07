@@ -543,8 +543,10 @@ class ComparePanel(ImagePanel):
 
 
 class MainFrame(wx.Frame):
-    def __init__(self, conf, engine, mode='mask', outdir=None):
+    def __init__(self, conf, engine, mode='mask', outdir=None,
+                 save_as=None):
         self.mode = mode
+        self.save_as = save_as  # fixed default save name (no Open button)
         self.outdir = outdir    # default directory of the save dialog
         title = {'mask': "SMART AI mask builder", 'heal': "SMART AI healing",
                  'denoise': "SMART raw denoising"}[mode]
@@ -634,10 +636,13 @@ class MainFrame(wx.Frame):
 
         what = "mask" if mode == 'mask' else "image"
         self.busy_controls = []
-        tb_open = add_tool(wx.ID_OPEN, "Open", 'folder-open.svg',
-            shortHelp="Open image...")
+        tb_open = None
+        if save_as is None:
+            tb_open = add_tool(wx.ID_OPEN, "Open", 'folder-open.svg',
+                shortHelp="Open image...")
         tb_save = add_tool(wx.ID_SAVE, "Save", 'save.svg',
-            shortHelp=f"Save {what}...")
+            shortHelp=f"Save {what}..." if save_as is None
+            else f"Save {what} to {os.path.basename(save_as)}")
         tb_reset = add_tool(wx.ID_ANY, "Reset", 'undo-all.svg',
             shortHelp={'mask': "Remove all points",
                        'heal': "Revert to the image as loaded",
@@ -702,7 +707,6 @@ class MainFrame(wx.Frame):
         toolbar.Realize()
 
         accel_entries = [
-            wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('o'), tb_open.GetId()),
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('s'), tb_save.GetId()),
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('z'), tb_undo.GetId()),
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('r'), tb_reset.GetId()),
@@ -712,6 +716,9 @@ class MainFrame(wx.Frame):
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('1'), tb_zoom_1_1.GetId()),
             wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('f'), tb_zoom_fit.GetId()),
         ]
+        if tb_open is not None:
+            accel_entries.append(
+                wx.AcceleratorEntry(wx.ACCEL_CTRL, ord('o'), tb_open.GetId()))
         if mode == 'heal':
             accel_entries += [
                 wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_RETURN,
@@ -732,7 +739,9 @@ class MainFrame(wx.Frame):
         accel_table = wx.AcceleratorTable(accel_entries)
         self.SetAcceleratorTable(accel_table)
 
-        self.Bind(wx.EVT_MENU, self.on_open_image, tb_open)
+        if tb_open is not None:
+            self.Bind(wx.EVT_MENU, self.on_open_image, tb_open)
+            self.Bind(wx.EVT_TOOL, self.on_open_image, tb_open)
         self.Bind(wx.EVT_MENU, self.on_save, tb_save)
         self.Bind(wx.EVT_MENU, self.on_reset, tb_reset)
         if mode != 'denoise':
@@ -742,7 +751,6 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_MENU, self.panel_zoom_1_1, tb_zoom_1_1)
         self.Bind(wx.EVT_MENU, self.panel_zoom_fit, tb_zoom_fit)
 
-        self.Bind(wx.EVT_TOOL, self.on_open_image, tb_open)
         self.Bind(wx.EVT_TOOL, self.panel_zoom_in, tb_zoom_in)
         self.Bind(wx.EVT_TOOL, self.panel_zoom_out, tb_zoom_out)
         self.Bind(wx.EVT_TOOL, self.panel_zoom_1_1, tb_zoom_1_1)
@@ -884,6 +892,8 @@ class MainFrame(wx.Frame):
             self.statusbar.SetStatusText(
                 "Nothing to save: denoise the image first")
             return True
+        if self.save_as is not None and not os.path.exists(self.save_as):
+            return self._write_output(self.save_as)
         dd = self.outdir or str(self.filename.parent)
         if self.mode == 'denoise':
             title = "Save Denoised Image"
@@ -913,6 +923,8 @@ class MainFrame(wx.Frame):
         # NOTE: wxWidgets 3.2.9 on macOS asserts (index out of bounds) in
         # FileDialog.ShowModal() with FD_SAVE and a single wildcard filter,
         # so we add a second one as a workaround
+        if self.save_as is not None:    # exists already: ask
+            dd, df = os.path.split(self.save_as)
         with wx.FileDialog(self, title,
                            wildcard=wildcard,
                            style=wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT,
@@ -925,21 +937,24 @@ class MainFrame(wx.Frame):
                 dng_first = self.engine.default_format == 'dng'
                 path += '.dng' if (fd.GetFilterIndex() == 1) != dng_first \
                     else '.tif'
-            try:
-                if self.mode == 'mask':
-                    self.engine.save_mask(path)
-                    self.statusbar.SetStatusText(f"mask saved to {path}")
-                else:
-                    self.engine.save_image(path)
-                    self.statusbar.SetStatusText(f"image saved to {path}")
-                return True
-            except Exception as e:
-                wx.MessageDialog(self, f"Error saving "
-                                 f"{'mask' if self.mode == 'mask' else 'image'}"
-                                 f":\n{e}",
-                                 "Save Error",
-                                 wx.OK | wx.ICON_ERROR).ShowModal()
-                return False
+            return self._write_output(path)
+
+    def _write_output(self, path):
+        try:
+            if self.mode == 'mask':
+                self.engine.save_mask(path)
+                self.statusbar.SetStatusText(f"mask saved to {path}")
+            else:
+                self.engine.save_image(path)
+                self.statusbar.SetStatusText(f"image saved to {path}")
+            return True
+        except Exception as e:
+            wx.MessageDialog(self, f"Error saving "
+                             f"{'mask' if self.mode == 'mask' else 'image'}"
+                             f":\n{e}",
+                             "Save Error",
+                             wx.OK | wx.ICON_ERROR).ShowModal()
+            return False
 
     def on_save(self, event):
         if self.engine.busy_now():
@@ -1345,7 +1360,8 @@ def main(conf, filename=None, mode=None, outdir=None, opts=None):
         else:
             import engine
             eng = engine.AIMaskingEngine(conf)
-        frame = MainFrame(conf, eng, mode, outdir)
+        frame = MainFrame(conf, eng, mode, outdir,
+                          getattr(opts, 'save_as', None))
         def fixgeom():
             x, y = frame.GetPosition()
             w, h = frame.GetSize()

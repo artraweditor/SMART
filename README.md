@@ -103,6 +103,17 @@ tile size and margin (for mosaiced DNGs), and DNG output depth.
 By default the save dialog starts in the directory of the input image;
 use `--outdir DIR` to start it in another directory.
 
+### Integration with ART
+
+`--save-as FILE` (all modes) sets the default save name: the Save button
+writes to `FILE` straight away, without the file dialog (which is only shown
+if `FILE` already exists), and the Open button is hidden. The extension
+selects the output format in denoise mode.
+
+An ART user command can thus have SMART save to a temporary file, and
+move it next to the input image (with the sidecar) when SMART exits and the
+file was written.
+
 ### AI masking
 
 Start SMART with `SMART [image]`. Build a mask for the image by adding
