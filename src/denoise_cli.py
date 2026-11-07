@@ -13,7 +13,7 @@ def options_from_args(opts, conf):
     """denoise.Options from the config, overridden by the command line."""
     o = denoise.Options.from_config(conf, verbose=bool(opts.verbose))
     for src, dst in (('model', 'model'), ('model_file', 'model_file'),
-                     ('backend', 'backend'), ('provider', 'provider'),
+                     ('provider', 'provider'),
                      ('tile', 'tile'), ('margin', 'margin'), ('iso', 'iso'),
                      ('dng_bits', 'dng_bits'), ('wb', 'wb')):
         v = getattr(opts, src, None)

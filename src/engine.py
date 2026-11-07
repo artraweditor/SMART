@@ -1,4 +1,3 @@
-from pathlib import Path
 import io
 import os
 import json
@@ -18,24 +17,11 @@ def checksum(filename):
 
 class AIMaskingEngine(BaseEngine):
     def __init__(self, conf):
-        # SAM2 is only needed in masking mode
-        from sam2.build_sam import build_sam2
-        from sam2.sam2_image_predictor import SAM2ImagePredictor
-        import hydra
-        from hydra.core.global_hydra import GlobalHydra
-        if GlobalHydra.instance().is_initialized():
-            GlobalHydra.instance().clear()
         super().__init__(conf)
-        sam2_checkpoint = self.conf.get_model_file()
-        model_cfg_dir, model_cfg = self.conf.get_model_config()
-        with hydra.initialize_config_dir(
-                version_base=None,
-                config_dir=str(Path(model_cfg_dir).resolve())):
-            self.sam2_model = build_sam2(model_cfg,
-                                         sam2_checkpoint,
-                                         device=self.conf.device)
-            self.sam2_model.eval()
-        self.predictor = SAM2ImagePredictor(self.sam2_model)
+        import sam2_onnx
+        enc, dec = self.conf.get_mask_model_files()
+        self.predictor = sam2_onnx.Sam2Predictor(
+            enc, dec, getattr(self.conf, 'mask_provider', 'cpu'))
         self.image = None
         self.mask = None
         self.mask_input = None

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import ndimage
 
+import config
 import resample
 
 MAX = 1024          # longest side given to the model at once
@@ -211,79 +212,114 @@ def filled(image, hole, d, mx, run):
 # Backends: callables (image NCHW f32 0..1 blanked in hole, mask NCHW 0/1)
 # -> output NCHW f32.
 
-class OnnxBackend:
-    name = 'onnx'
+COREML = 'CoreMLExecutionProvider'
+_ALIASES = {'cpu': 'CPUExecutionProvider', 'coreml': COREML,
+            'cuda': 'CUDAExecutionProvider', 'rocm': 'ROCMExecutionProvider',
+            'directml': 'DmlExecutionProvider',
+            'openvino': 'OpenVINOExecutionProvider'}
 
-    def __init__(self, path, providers=None):
+
+class OnnxBackend:
+    """LaMa on onnxruntime.  The CoreML provider only takes static shapes:
+    with it (model made by tools/make_lama_coreml.py) there is one session
+    for each window size, made when first needed (the compiled networks are
+    cached on disk)."""
+    name = 'onnx'
+    # CoreML: windows are mirrored out to a square of one of these sizes (a
+    # compiled network is cached on disk for each: 0.4 GB), and smaller ones
+    # run on the CPU, which is as fast as starting a session
+    LADDER = (256, 384, 512, 768, 1024)
+    CPU_BELOW = 192
+    MAX_SESSIONS = 3
+
+    def __init__(self, path, providers=None, cache_dir=None):
         import onnxruntime as ort
         if not os.path.exists(path):
             raise ModelMissing(f'LaMa model not found: {path} '
-                               '(run with --download-heal-model onnx)')
+                               '(run with --download-heal-model)')
         avail = ort.get_available_providers()
         if providers is None:
             providers = [p for p in ('CUDAExecutionProvider',) if p in avail]
-        providers = list(providers) + ['CPUExecutionProvider']
-        so = ort.SessionOptions()
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        providers = [_ALIASES.get(p, p) for p in providers
+                     if p != 'CPUExecutionProvider']
         self._ort = ort
         self._path = path
+        self._cache = cache_dir
+        self._providers = providers
+        so = ort.SessionOptions()
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self._so = so
-        self.session = ort.InferenceSession(path, so, providers=providers)
-        self.provider = self.session.get_providers()[0]
+        self._sessions = {}     # (height, width) -> session (CoreML only)
+        self.coreml = COREML in providers
+        self.session = None     # the dynamic session (CPU, CUDA...)
+        if self.coreml:
+            self.provider = COREML
+            self._session_for(WARM, WARM)
+        else:
+            self._cpu_session(providers)
         self(np.full((1, 3, WARM, WARM), 0.5, np.float32),
              np.zeros((1, 1, WARM, WARM), np.float32))
 
-    def __call__(self, image, mask):
-        try:
-            return self.session.run(['output'], {'image': image, 'mask': mask})[0]
-        except Exception:
-            if self.provider == 'CPUExecutionProvider':
-                raise
-            self.session = self._ort.InferenceSession(
-                self._path, self._so, providers=['CPUExecutionProvider'])
-            self.provider = 'CPUExecutionProvider'
-            return self.session.run(['output'], {'image': image, 'mask': mask})[0]
+    def _cpu_session(self, providers=()):
+        self.session = self._ort.InferenceSession(
+            self._path, self._so,
+            providers=list(providers) + ['CPUExecutionProvider'])
+        if not self.coreml:
+            self.provider = self.session.get_providers()[0]
 
-
-class TorchBackend:
-    name = 'torch'
-
-    def __init__(self, path, device='cpu'):
-        os.environ.setdefault('PYTORCH_ENABLE_MPS_FALLBACK', '1')
-        import torch
-        if not os.path.exists(path):
-            raise ModelMissing(f'LaMa model not found: {path} '
-                               '(run with --download-heal-model torch)')
-        self.torch = torch
-        self.path = path
-        self.device = device
-        self.model = torch.jit.load(path, map_location=device).eval()
-        self.provider = device
-        self(np.full((1, 3, WARM, WARM), 0.5, np.float32),
-             np.zeros((1, 1, WARM, WARM), np.float32))
+    def _session_for(self, h, w):
+        ort = self._ort
+        key = (h, w)
+        sess = self._sessions.pop(key, None)
+        if sess is None:
+            so = ort.SessionOptions()
+            so.graph_optimization_level = \
+                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            so.log_severity_level = 3
+            so.add_free_dimension_override_by_name('8*hk', h)
+            so.add_free_dimension_override_by_name('8*wk', w)
+            opts = {'ModelFormat': 'MLProgram',
+                    'MLComputeUnits': 'CPUAndGPU'}
+            if self._cache:
+                opts['ModelCacheDirectory'] = os.path.join(
+                    self._cache, f'lama-{h}x{w}')
+            sess = ort.InferenceSession(
+                self._path, so,
+                providers=[(COREML, opts), 'CPUExecutionProvider'])
+        self._sessions[key] = sess      # most recently used last
+        while len(self._sessions) > self.MAX_SESSIONS:
+            del self._sessions[next(iter(self._sessions))]
+        return sess
 
     def _run(self, image, mask):
-        import warnings
-        torch = self.torch
-        # The exported model's FFT writes into an empty `out` tensor that
-        # torch then resizes: deprecated, harmless, and not ours to fix.
-        with warnings.catch_warnings(), torch.inference_mode():
-            warnings.filterwarnings(
-                'ignore', message='An output with one or more elements '
-                'was resized')
-            out = self.model(torch.from_numpy(image).to(self.device),
-                             torch.from_numpy(mask).to(self.device))
-        return out.float().cpu().numpy()
+        if not self.coreml:
+            return self.session.run(
+                ['output'], {'image': image, 'mask': mask})[0]
+        h, w = image.shape[2:]
+        side = max(h, w)
+        if side <= self.CPU_BELOW or side > self.LADDER[-1]:
+            if self.session is None:
+                self._cpu_session()
+            return self.session.run(
+                ['output'], {'image': image, 'mask': mask})[0]
+        n = next(n for n in self.LADDER if n >= side)
+        iy, ix = mirror_index(n, h), mirror_index(n, w)
+        out = self._session_for(n, n).run(
+            ['output'], {'image': np.ascontiguousarray(image[:, :, iy][..., ix]),
+                         'mask': np.ascontiguousarray(mask[:, :, iy][..., ix])})[0]
+        return out[:, :, :h, :w]
 
     def __call__(self, image, mask):
         try:
             return self._run(image, mask)
         except Exception:
-            if self.device == 'cpu':
+            if self.provider == 'CPUExecutionProvider':
                 raise
-            self.model = self.torch.jit.load(
-                self.path, map_location='cpu').eval()
-            self.device = self.provider = 'cpu'
+            # an accelerator that cannot run the model: use the CPU
+            self.coreml = False
+            self._sessions.clear()
+            self._cpu_session()
+            self.provider = 'CPUExecutionProvider'
             return self._run(image, mask)
 
 
@@ -330,30 +366,14 @@ class Filler:
         return filled(image, hole, d, self.max, self.fill)
 
 
-def resolve_backend_name(conf):
-    name = getattr(conf, 'heal_backend', 'auto')
-    if name != 'auto':
-        return name
-    if conf.device == 'mps':
-        return 'torch'
-    if conf.device == 'cuda':
-        try:
-            import onnxruntime as ort
-            if 'CUDAExecutionProvider' in ort.get_available_providers():
-                return 'onnx'
-        except ImportError:
-            pass
-        return 'torch'
-    return 'onnx'
-
-
 def make_filler(conf):
-    name = resolve_backend_name(conf)
-    path = conf.get_heal_model_file(name)
-    if name == 'onnx':
-        be = OnnxBackend(str(path), conf.heal_providers)
-    elif name == 'torch':
-        be = TorchBackend(str(path), conf.device)
-    else:
-        raise ValueError(f'unknown heal backend: {name}')
+    """Filler on the configured providers (by default CoreML if available,
+    else the CPU)."""
+    provs = conf.heal_providers
+    if provs is None:
+        import onnxruntime as ort
+        if COREML in ort.get_available_providers():
+            provs = [COREML]
+    be = OnnxBackend(str(conf.get_heal_model_file()), provs,
+                     str(config.Config.models_dir() / 'coreml-cache'))
     return Filler(be, conf.heal_max_tile)

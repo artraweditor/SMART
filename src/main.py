@@ -17,14 +17,12 @@ def getopts():
                    'heal: AI-assisted healing; '
                    'denoise: raw denoising of a mosaiced or linear DNG. '
                    'If not given, the GUI asks which mode to use')
-    p.add_argument('--download-heal-model', nargs='?', const='auto',
-                   choices=['auto', 'onnx', 'torch'], metavar='BACKEND',
+    p.add_argument('--download-heal-model', action='store_true',
                    help='download the LaMa model used by the healing mode '
-                   '(onnx or torch; default: the one selected by the '
-                   'configuration) and exit')
+                   'and exit')
     p.add_argument('--download-mask-model', metavar='QUALITY',
                    choices=list(config.MASK_MODELS),
-                   help='download a SAM2.1 checkpoint for the masking mode '
+                   help='download a SAM2.1 model for the masking mode '
                    f'({", ".join(config.MASK_MODELS)}; larger is better '
                    'but slower) and exit')
     p.add_argument('--download-denoise-model', nargs='?', const='config',
@@ -52,12 +50,8 @@ def getopts():
                    '(default: from the file)')
     g.add_argument('--model-file', help='use this ONNX file instead of a '
                    'model')
-    g.add_argument('--backend', choices=['onnxruntime', 'torch'],
-                   help='onnxruntime (CoreML/CUDA/DirectML/CPU) or torch '
-                   '(cuda/mps/xpu/cpu)')
-    g.add_argument('--provider', help='onnxruntime: auto, cpu, coreml, '
-                   'cuda, tensorrt, rocm, directml, openvino; torch: auto, '
-                   'cpu, cuda, mps, xpu')
+    g.add_argument('--provider', help='onnxruntime provider: auto, cpu, '
+                   'coreml, cuda, tensorrt, rocm, directml, openvino')
     g.add_argument('--noise', metavar='aR,bR,aG,bG,aB,bB',
                    help='noise model (levels 0..1) instead of estimating it')
     g.add_argument('-f', '--format', choices=['tiff', 'dng'],
@@ -122,18 +116,20 @@ def download(url, dest, size, sha):
     print('Done.')
 
 
-def download_heal_model(conf, backend):
-    import lama
-    if backend == 'auto':
-        backend = lama.resolve_backend_name(conf)
-    name, url, size, sha = config.HEAL_MODELS[backend]
-    download(url, conf.get_heal_model_file(backend), size, sha)
+def download_heal_model(conf):
+    name, url, size, sha = config.HEAL_MODEL
+    download(url, conf.get_heal_model_file(), size, sha)
 
 
 def download_mask_model(conf, quality):
-    name, url, size, sha = config.MASK_MODELS[quality]
-    download(url, config.Config.models_dir() / name, size, sha)
-    print(f'To use it, set "model": "{name}" in the configuration file '
+    models = config.MASK_MODELS[quality]
+    for (name, url, size, sha) in models:
+        if not url:
+            sys.exit(f'error: no download location for {name}; create it '
+                     'with tools/export_sam2_onnx.py')
+    for (name, url, size, sha) in models:
+        download(url, config.Config.models_dir() / name, size, sha)
+    print(f'To use it, set "model": "{quality}" in the configuration file '
           f'({config.Config.get_config_file()}).')
 
 
@@ -158,7 +154,7 @@ def main():
         import denoise_cli
         sys.exit(denoise_cli.run(opts, conf))
     elif opts.download_heal_model:
-        download_heal_model(conf, opts.download_heal_model)
+        download_heal_model(conf)
     elif opts.download_mask_model:
         download_mask_model(conf, opts.download_mask_model)
     elif opts.init_config:

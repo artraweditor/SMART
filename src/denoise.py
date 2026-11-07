@@ -3,8 +3,8 @@
 A port of the raw denoiser of greycard
 (https://github.com/jessolmstead/greycard, tools/denoise, GPL-3.0).  The
 network demosaics *and* denoises a Bayer mosaic; this module holds the code
-around it (noise estimation, variance-stabilising transform, tiling,
-backends), plus the preview rendering and output writing used by SMART.
+around it (noise estimation, variance-stabilising transform, tiling),
+plus the preview rendering and output writing used by SMART.
 
 Results are linear, camera-native RGB (black removed, divided by white; no
 white balance, no colour matrix) unless a white balance is requested.
@@ -403,39 +403,6 @@ def make_treenet_runner(model_path, provider="auto", verbose=False,
 
 
 # ---------------------------------------------------------------------------
-# PyTorch backend (optional: `pip install torch onnx onnx2torch`)
-
-
-def make_torch_runner(model_path, device="auto"):
-    """The same network through onnx2torch: CUDA / ROCm / MPS / XPU / CPU by
-    one code path."""
-    import onnx
-    import torch
-    from onnx2torch import convert
-
-    if device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif torch.backends.mps.is_available():
-            device = "mps"
-        elif hasattr(torch, "xpu") and torch.xpu.is_available():
-            device = "xpu"
-        else:
-            device = "cpu"
-    net = convert(onnx.load(str(model_path))).eval().to(device)
-
-    def run(packed):
-        with torch.inference_mode():
-            return (
-                net(torch.from_numpy(packed).to(device)).float().cpu().numpy()
-            )
-
-    run.state = {"prov": [f"torch:{device}"]}
-    return run
-
-
-
-# ---------------------------------------------------------------------------
 # Options, models, and the whole pipeline
 
 
@@ -451,7 +418,6 @@ class Cancelled(Exception):
 class Options:
     model: str = "balanced"          # fast, balanced or best
     model_file: str | None = None    # ONNX file overriding the model
-    backend: str = "onnxruntime"     # or "torch" (mosaic models only)
     provider: str = "auto"
     noise: tuple | None = None       # (aR, bR, aG, bG, aB, bB) or estimate
     iso: float | None = None         # linear DNGs: override the file's ISO
@@ -465,7 +431,7 @@ class Options:
     @staticmethod
     def from_config(conf, **kw):
         return Options(
-            model=conf.denoise_model, backend=conf.denoise_backend,
+            model=conf.denoise_model,
             provider=conf.denoise_provider, tile=conf.denoise_tile,
             margin=conf.denoise_margin, dng_bits=conf.denoise_dng_bits, **kw)
 
@@ -482,7 +448,7 @@ class Options:
         return path
 
     def runner_key(self, kind="mosaic"):
-        return (str(self.model_path(kind)), self.backend, self.provider,
+        return (str(self.model_path(kind)), self.provider,
                 self.tile, self.margin)
 
 
@@ -491,12 +457,7 @@ def make_run(opts, kind="mosaic"):
     `denoise_linear`) for this kind of DNG."""
     path = opts.model_path(kind)
     if kind == "linear":
-        if opts.backend == "torch":
-            raise ValueError("the torch backend is not available for "
-                             "linear DNG models")
         return make_treenet_runner(path, opts.provider, opts.verbose)
-    if opts.backend == "torch":
-        return make_torch_runner(path, opts.provider)
     tile, margin = tiling(opts.tile, opts.margin)
     return make_runner(path, opts.provider, opts.verbose,
                        (tile + 2 * margin) // 2)

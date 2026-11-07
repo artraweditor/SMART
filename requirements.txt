@@ -6,4 +6,3 @@ scipy
 tifffile
 imagecodecs
 onnxruntime
-git+https://github.com/facebookresearch/sam2.git

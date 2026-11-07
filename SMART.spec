@@ -3,17 +3,11 @@
 #   SMART.exe          windowed (no console), for double-clicking
 #   SMART-console.exe  console subsystem, for use from cmd/PowerShell/scripts
 # Paths are relative to this file; run from the repository root.
-from PyInstaller.utils.hooks import (collect_all, collect_submodules,
-                                     collect_dynamic_libs)
+from PyInstaller.utils.hooks import collect_submodules, collect_dynamic_libs
 
 datas = [('icons', 'icons'), ('data', 'data'), ('exiftool-bundle', 'exiftool')]
 binaries = []
 hiddenimports = []
-for pkg in ('sam2', 'hydra', 'omegaconf'):
-    d, b, h = collect_all(pkg)
-    datas += d
-    binaries += b
-    hiddenimports += h
 hiddenimports += collect_submodules('imagecodecs')
 binaries += collect_dynamic_libs('onnxruntime')
 
@@ -24,7 +18,7 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     excludes=['tkinter', 'matplotlib', 'IPython', 'pytest',
-              'torch.utils.tensorboard'],
+              'torch', 'torchvision', 'sam2', 'hydra', 'omegaconf'],
 )
 pyz = PYZ(a.pure)
 

@@ -8,13 +8,14 @@ the full-bleed artwork icons/app-icon-fullbleed.png (brush strokes running out t
 the corners) is cropped as in a Liquid Glass icon, masked with a squircle on
 Apple's 824-of-1024 icon grid, and given a soft shadow and a thin light rim.
 
-    python3 icons/make_macos_icon.py
+    python3 tools/make_macos_icon.py
 """
 import os
 import numpy as np
 from PIL import Image, ImageFilter
 
-icons = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+icons = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     '..', 'icons')
 logo = Image.open(os.path.join(icons, 'app-icon-fullbleed.png')).convert('RGBA')
 
 # --- macOS-style tile: same crop as the Liquid Glass icon (scale 1.1)

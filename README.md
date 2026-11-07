@@ -30,10 +30,11 @@ Make sure you have the following installed:
 3. **Pillow**: https://pillow.readthedocs.io/
 4. **platformdirs**: http://pypi.org/project/platformdirs/
 5. **NumPy**, **SciPy**, **tifffile** and **imagecodecs**
-6. For AI masking: **SAM2**: https://github.com/facebookresearch/sam2
-7. For AI healing and raw denoising: **onnxruntime** (default), or
-   **PyTorch** (needed for Apple GPUs, and already installed together
-   with SAM2)
+6. For AI masking, healing and raw denoising: **onnxruntime**
+
+SMART does not need PyTorch: all the neural networks run on onnxruntime.
+(PyTorch and SAM2 are only needed by `tools/export_sam2_onnx.py`, which
+creates the SAM2 models; see `tools/requirements-export.txt`.)
 
 All the dependencies can be installed with PIP, with the command
 `pip install -r requirements.txt`.
@@ -56,9 +57,10 @@ repackaged in [rawlab-models](https://huggingface.co/AyedaOk/rawlab-models).
 Run `SMART --init-config` from a terminal to create an initial
 configuration file. The path to the file will be printed in output. Edit
 the file with a text editor, and adapt the parameters to your setup. The
-`device` parameter selects the device to use for computations: `"cuda"`
-for a CUDA-capable GPU, `"mps"` for the GPU on an ARM Apple machine, or
-`"cpu"` otherwise (this might be slow though).
+`mask_provider`, `heal_providers` and `denoise_provider` parameters select
+the onnxruntime execution providers used by the three modes (e.g.
+`"cuda"`, `"coreml"`, `"directml"`); the default is the CPU for masking and
+healing, and the best available one for denoising.
 
 Then download the model(s) for the mode(s) you want to use. They are put
 in the `models/` directory. (In the GUI, if the model of the selected mode
@@ -67,22 +69,31 @@ when you press the Denoise button.)
 
 ### AI masking
 
-Download one of the SAM 2 model checkpoints with
+Download one of the SAM 2.1 models with
 `SMART --download-mask-model QUALITY`, where `QUALITY` is one of `tiny`,
-`small`, `base_plus` or `large` (larger is better but slower), or manually
-from
-https://github.com/facebookresearch/sam2?tab=readme-ov-file#download-checkpoints.
-Then set the `model` parameter in the configuration file to the name of
-the checkpoint to use.
+`small`, `base_plus` or `large` (larger is better but slower), then set the
+`model` parameter in the configuration file to the same name. The models
+are ONNX versions of Meta's SAM 2.1 checkpoints (an image encoder and a
+mask decoder, 126, 155, 294 and 869 MB in total), made with
+`tools/export_sam2_onnx.py`, which also checks them against the PyTorch
+implementation. On the CPU the encoder takes a few seconds per image
+(2.6 s for `large` on an Apple M-series machine) and each click is almost
+instantaneous. With `"mask_provider": "coreml"` the encoder is faster
+(1.4 s) but the first start compiles the network, which takes several minutes.
 
 ### AI healing
 
-Download the LaMa model with `SMART --download-heal-model`. This
-selects the model according to `device`: the ONNX one by default, or the
-PyTorch one with `"mps"` (to use the Apple GPU). You can choose
-explicitly with `SMART --download-heal-model onnx` or
-`SMART --download-heal-model torch`, in which case set also the
-`heal_backend` parameter in the configuration file accordingly.
+Download the LaMa model with `SMART --download-heal-model`. On a Mac it runs
+on the GPU through CoreML by default (about 3 times faster than the CPU for
+the larger windows); elsewhere on the CPU, or on the providers listed in
+`heal_providers` (e.g. `["CUDAExecutionProvider"]`; `["cpu"]` to force the
+CPU). CoreML needs a fixed window size: SMART rounds windows up to 256, 384,
+512, 768 or 1024 pixels (smaller ones run on the CPU). The first time each
+size is used it takes a second or two to compile the network, and the result
+is cached in `models/coreml-cache` (about 0.4 GB for each size).
+
+The model is the one of [greycard](https://huggingface.co/jessolmstead/greycard-lama),
+with a few operations rewritten for CoreML by `tools/make_lama_coreml.py`.
 
 ### Raw denoising
 
@@ -94,8 +105,7 @@ also has a network for linear DNGs (the TreeNet `light`, standard and
 `heavy` models: 1.5, 10 and 22 MB), downloaded together with it. In the
 GUI, a missing model is offered for download when needed. The models are
 put in the `models/` directory. The `denoise_*` parameters of the
-configuration file set the default model, backend (`onnxruntime` or
-`torch`; onnxruntime only for linear DNGs), provider or device (`auto`),
+configuration file set the default model, onnxruntime provider (`auto`),
 tile size and margin (for mosaiced DNGs), and DNG output depth.
 
 ## Usage
@@ -176,7 +186,7 @@ Without the GUI:
     SMART --mode denoise --cli linear.dng -m best -o linear-dn.dng
     SMART --mode denoise --cli photo.dng -m best --provider cpu
     SMART --mode denoise --cli photo.dng -o photo-dn.dng --dng-bits 32
-    SMART --mode denoise --cli photo.dng --backend torch
+    SMART --mode denoise --cli photo.dng --provider coreml
 
 The default output is `photo-denoised.tif`. Other options: `--model-file`,
 `--noise aR,bR,aG,bG,aB,bB` (mosaics), `--iso` (linear DNGs), `-f tiff|dng`, `--wb camera` (TIFF only),

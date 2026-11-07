@@ -10,7 +10,7 @@ The full-bleed artwork fills the whole rounded square of the system icon
 (the layer is scaled up a little and re-centred so that the outline of the
 white square touches the edges, and the brush strokes run out to the corners).
 
-    python3 icons/make_liquid_glass_icon.py <outdir>
+    python3 tools/make_liquid_glass_icon.py <outdir>
 """
 import json
 import os
@@ -23,7 +23,8 @@ ART = 'app-icon-fullbleed.png'
 
 
 def main(outdir):
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        '..', 'icons')
     outdir = os.path.abspath(outdir)
     icon = os.path.join(outdir, NAME + '.icon')
     build = os.path.join(outdir, 'actool')

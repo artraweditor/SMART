@@ -22,39 +22,52 @@ def resource_dir():
     return Path(__file__).resolve().parent.parent
 
 
-# SAM2.1 checkpoints for AI masking: quality -> (file name, url, size, sha256)
-# (the checksum is not known: None means "not verified", it is only printed)
-_SAM2_URL = 'https://dl.fbaipublicfiles.com/segment_anything_2/092824/'
+# SAM2.1 networks for AI masking, converted to ONNX with
+# tools/export_sam2_onnx.py: quality -> ((encoder file name, url, size,
+# sha256), (decoder file name, url, size, sha256)).
+# The files are in https://huggingface.co/agriggio/smart-onnx-models (pinned to
+# a commit).
+_HF_URL = 'https://huggingface.co/agriggio/smart-onnx-models/resolve/f5e0eb009abde02e885d6464d62c22f4d2435f4b/'
+_SAM2_URL = _HF_URL
+def _sam2(q, esize=None, esha=None, dsize=None, dsha=None):
+    def f(kind, size, sha):
+        name = f'sam2.1_hiera_{q}_{kind}.onnx'
+        return (name, _SAM2_URL + name if _SAM2_URL else None, size, sha)
+    return (f('encoder', esize, esha), f('decoder', dsize, dsha))
 MASK_MODELS = {
-    'tiny': ('sam2.1_hiera_tiny.pt', _SAM2_URL + 'sam2.1_hiera_tiny.pt',
-             156_008_466, None),
-    'small': ('sam2.1_hiera_small.pt', _SAM2_URL + 'sam2.1_hiera_small.pt',
-              184_416_285, None),
-    'base_plus': ('sam2.1_hiera_base_plus.pt',
-                  _SAM2_URL + 'sam2.1_hiera_base_plus.pt',
-                  323_606_802, None),
-    'large': ('sam2.1_hiera_large.pt', _SAM2_URL + 'sam2.1_hiera_large.pt',
-              898_083_611, None),
+    'tiny': _sam2(
+        'tiny', 109_471_931,
+        '769f6278eda2fdcb53c3e247e42259ce3f4002ef8e885d838ca4f2d6345c5d0c',
+        16_508_159,
+        'cccf25b0b49819fb25c389841046dfbf5ac169be58d82e5cf6d6894675a43b36'),
+    'small': _sam2(
+        'small', 138_018_779,
+        'd1eee90b60dd814dd16db38f4adcb7b7bf39686235b9afe5f00404bdde9188e5',
+        16_508_159,
+        'a5e2fdb10ed20763df5e2d5937bdbcb6ee108e63ea8bdb87582489360e847c76'),
+    'base_plus': _sam2(
+        'base_plus', 277_472_669,
+        'b301c76a5f18ea409a93b0ce0de3954ecbe910fa6b328a6f25450d4c41dc6318',
+        16_508_159,
+        '89a0854ccf41ea96b75a1ae60cc8582936bf52dc602d4df8072f750413945c01'),
+    'large': _sam2(
+        'large', 852_451_097,
+        'c4de4a5e5c0dfbf3434a53a23b6cb7edc2172e472becb0754f1d2840cea35960',
+        16_508_159,
+        '76ba67bd3f608ba9c5ef1ab3fa2f312f7754afbe96fcd1cc36d691072d56e555'),
 }
 
-# model registry for AI healing: backend -> (file name, url, size, checksum)
-# (checksum is a sha256; None means "not verified")
-HEAL_MODELS = {
-    'onnx': (
-        'big-lama-dynamic-fp32.onnx',
-        'https://huggingface.co/jessolmstead/greycard-lama/resolve/main/'
-        'big-lama-dynamic-fp32.onnx',
-        209_024_270,
-        '5f39f5e80b91596fd50f3227858c97912dabc0ffbd4796f21ca688529abb8771',
-    ),
-    'torch': (
-        'big-lama.pt',
-        'https://github.com/Sanster/models/releases/download/add_big_lama/'
-        'big-lama.pt',
-        None,
-        None,  # TODO: record the checksum at first download
-    ),
-}
+# The LaMa model for AI healing: (file name, url, size, sha256).  It is
+# greycard's big-lama export (Apache-2.0,
+# https://huggingface.co/jessolmstead/greycard-lama) with the few ops that the
+# CoreML provider rejects rewritten by tools/make_lama_coreml.py; the results
+# are the same and it runs on every provider.
+HEAL_MODEL = (
+    'big-lama-dynamic-coreml.onnx',
+    _HF_URL + 'big-lama-dynamic-coreml.onnx',
+    208_852_027,
+    'f7707ac0db751c9cf35ec3eee149032068862c96e3f7ffa6109eef97ec36a414',
+)
 
 # model registry for raw denoising (greycard's models, GPL-3.0):
 # tier -> (file name, url, size, sha256)
@@ -101,9 +114,10 @@ def denoise_models(kind):
 
 @dataclasses.dataclass
 class Config:
-    device: str = "cpu"
-    model: str = "sam2.1_hiera_base_plus.pt"
-    model_config: str|None = None
+    # AI masking: SAM2.1 quality (tiny, small, base_plus or large) and the
+    # onnxruntime provider for the image encoder (cpu, coreml, cuda, ...)
+    model: str = "base_plus"
+    mask_provider: str = "cpu"
     mask_color: tuple[int, int, int] = (70, 230, 50)
     background_color: tuple[int, int, int] = (127, 127, 127)
     exiftool: str = "exiftool"
@@ -111,7 +125,6 @@ class Config:
     last_dir: str = ""
     display_icc_profile: str|None = None
     # AI healing
-    heal_backend: str = "auto"  # "auto", "onnx" or "torch"
     heal_providers: list[str]|None = None  # onnxruntime providers
     heal_max_tile: int = 1024
     heal_seam_match: bool = True
@@ -119,8 +132,7 @@ class Config:
     heal_regrain: bool = True
     # raw denoising
     denoise_model: str = "balanced"     # fast, balanced or best
-    denoise_backend: str = "onnxruntime"  # or "torch"
-    denoise_provider: str = "auto"      # onnxruntime provider / torch device
+    denoise_provider: str = "auto"      # onnxruntime provider
     denoise_tile: int = 1024
     denoise_margin: int = 96
     denoise_dng_bits: int = 16          # 16 (integer) or 32 (float) DNG output
@@ -129,20 +141,6 @@ class Config:
     brush_opacity: float = 1.0
     brush_color: tuple[int, int, int] = (255, 60, 60)
 
-    def get_model_config(self):
-        if self.model_config is not None:
-            return str(Config.models_dir()), self.model_config
-        confmap = {
-            "sam2.1_hiera_tiny.pt": "sam2.1_hiera_t.yaml",
-            "sam2.1_hiera_small.pt": "sam2.1_hiera_s.yaml",
-            "sam2.1_hiera_base_plus.pt": "sam2.1_hiera_b+.yaml",
-            "sam2.1_hiera_large.pt": "sam2.1_hiera_l.yaml",
-        }
-        name = confmap.get(self.model)
-        if name is not None:
-            return str(resource_dir() / 'data'), name
-        raise ValueError(f'no model configuration found')
-
     @staticmethod
     def models_dir():
         if is_frozen():
@@ -150,11 +148,24 @@ class Config:
             return Path(user_data_dir('SMART', 'ART')) / 'models'
         return Path(__file__).parent / '../models'
 
-    def get_model_file(self):
-        return Config.models_dir() / self.model
+    def mask_quality(self):
+        """The SAM2.1 quality (a key of MASK_MODELS) selected by `model`;
+        also understands the names of the old PyTorch checkpoints."""
+        m = self.model
+        if m not in MASK_MODELS:
+            m = m.removeprefix('sam2.1_hiera_').removesuffix('.pt')
+        if m not in MASK_MODELS:
+            raise ValueError(f'unknown masking model: {self.model} (use one '
+                             f'of {", ".join(MASK_MODELS)})')
+        return m
 
-    def get_heal_model_file(self, backend):
-        return Config.models_dir() / HEAL_MODELS[backend][0]
+    def get_mask_model_files(self):
+        """(encoder, decoder) ONNX files of the masking model."""
+        enc, dec = MASK_MODELS[self.mask_quality()]
+        return Config.models_dir() / enc[0], Config.models_dir() / dec[0]
+
+    def get_heal_model_file(self):
+        return Config.models_dir() / HEAL_MODEL[0]
 
     def get_denoise_model_file(self, tier, kind='mosaic'):
         return Config.models_dir() / denoise_models(kind)[tier][0]

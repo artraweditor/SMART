@@ -1,0 +1,12 @@
+# For tools/export_sam2_onnx.py only (use a separate virtual environment):
+torch
+torchvision
+onnx
+onnxscript
+onnxruntime
+numpy
+pillow
+hydra-core
+iopath
+tqdm
+git+https://github.com/facebookresearch/sam2.git

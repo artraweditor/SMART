@@ -1,11 +1,15 @@
-models downloaded from https://github.com/facebookresearch/sam2
-should be put here, and the configuration file edited appropriately
+AI masking models (see `SMART --download-mask-model`) are put here:
+ - sam2.1_hiera_{tiny,small,base_plus,large}_{encoder,decoder}.onnx: SAM 2.1
+   (Apache-2.0, https://github.com/facebookresearch/sam2) converted with
+   tools/export_sam2_onnx.py
+ - (the old PyTorch checkpoints sam2.1_hiera_*.pt and big-lama.pt are not
+   used any more, apart from by tools/export_sam2_onnx.py)
 
 AI healing models (see `SMART --download-heal-model`) are also put here:
- - big-lama-dynamic-fp32.onnx (onnx backend; LaMa big-lama export by
-   greycard, Apache-2.0, https://huggingface.co/jessolmstead/greycard-lama)
- - big-lama.pt (torch backend, e.g. for Metal/"mps"; LaMa big-lama,
-   Apache-2.0, https://github.com/advimman/lama)
+ - big-lama-dynamic-coreml.onnx: LaMa big-lama export by greycard
+   (Apache-2.0, https://huggingface.co/jessolmstead/greycard-lama), adapted
+   for the CoreML provider with tools/make_lama_coreml.py (it runs on every
+   provider)
 
 Raw denoising models (see `SMART --download-denoise-model`) are also put here:
  - denoise-v19.onnx (fast), denoise-v15.onnx (balanced), denoise-v20.onnx

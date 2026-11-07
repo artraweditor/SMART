@@ -1193,6 +1193,13 @@ def ensure_model_file(parent, what, name, path, url, size, sha):
     path = Path(path)
     if path.is_file():
         return True
+    if not url:
+        wx.MessageDialog(
+            parent, f"{what} ({name}) is not installed, and there is no "
+            f"download location for it.\n\nExpected in:\n{path}\n\n"
+            "Create it with tools/export_sam2_onnx.py.",
+            "Model not found", wx.OK | wx.ICON_ERROR).ShowModal()
+        return False
     mb = f" (about {size / 1e6:.0f} MB)" if size else ""
     dlg = wx.MessageDialog(
         parent, f"{what} ({name}) is not installed.\n\n"
@@ -1246,22 +1253,24 @@ def ensure_mode_model(conf, mode):
     """Before starting: offer to download the model needed by `mode` (mask
     or heal) if it is missing.  Returns False if the program should not go on."""
     if mode == 'mask':
-        found = [m for m in config.MASK_MODELS.values()
-                 if m[0] == conf.model]
-        if not found:        # a custom model: nothing we can download
-            return True
-        name, url, size, sha = found[0]
-        what = "The SAM2 masking model"
-        path = conf.get_model_file()
-    elif mode == 'heal':
-        import lama
-        backend = lama.resolve_backend_name(conf)
-        name, url, size, sha = config.HEAL_MODELS[backend]
-        what = "The LaMa healing model"
-        path = conf.get_heal_model_file(backend)
-    else:
+        try:
+            files = zip(config.MASK_MODELS[conf.mask_quality()],
+                        conf.get_mask_model_files())
+        except ValueError as e:
+            wx.MessageDialog(None, str(e), "Masking model",
+                             wx.OK | wx.ICON_ERROR).ShowModal()
+            return False
+        for (name, url, size, sha), path in files:
+            if ensure_model_file(None, "The SAM2 masking model", name, path,
+                                 url, size, sha) is not True:
+                return False
         return True
-    return ensure_model_file(None, what, name, path, url, size, sha) is True
+    elif mode == 'heal':
+        name, url, size, sha = config.HEAL_MODEL
+        return ensure_model_file(None, "The LaMa healing model", name,
+                                 conf.get_heal_model_file(), url, size,
+                                 sha) is True
+    return True
 
 
 def app_icon(macos_tile=False):
