@@ -5,9 +5,11 @@ import os
 import sys
 import urllib.request
 
-
 def getopts():
     p = argparse.ArgumentParser()
+    p.add_argument('-V', '--version', action='version',
+                   version=f'SMART - an AI helper for ART: version ' +
+                   config.version, help='print the version and exit')
     p.add_argument('--init-config', action='store_true',
                    help='(re)-create an initial configuration file and exit')
     p.add_argument('--mode', choices=['mask', 'heal', 'denoise'],

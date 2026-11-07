@@ -7,6 +7,9 @@ import sys
 from platformdirs import user_config_dir, user_data_dir
 
 
+version = '0.3'
+
+
 def is_frozen():
     """True when running as a stand-alone (PyInstaller) build."""
     return getattr(sys, 'frozen', False)
@@ -18,7 +21,6 @@ def resource_dir():
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent.parent
 
-version = '0.2'
 
 # SAM2.1 checkpoints for AI masking: quality -> (file name, url, size, sha256)
 # (the checksum is not known: None means "not verified", it is only printed)
