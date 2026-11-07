@@ -77,7 +77,7 @@ jobs:
               echo "LIQUID_GLASS_ICON=build/icon/Assets.car" >> "$GITHUB_ENV"
           else
               echo "::warning::cannot build the Liquid Glass icon, using the plain one"
-              echo "ICON=icons/app-icon-1024.png" >> "$GITHUB_ENV"
+              echo "ICON=icons/app-icon-fullbleed.png" >> "$GITHUB_ENV"
           fi
 
       - name: Build with PyInstaller

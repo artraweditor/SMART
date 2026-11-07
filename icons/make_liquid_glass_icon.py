@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile icons/app-icon-1024.png into a macOS 26 Liquid Glass app icon.
+"""Compile icons/app-icon-fullbleed.png into a macOS 26 Liquid Glass app icon.
 
 Writes <outdir>/Assets.car (the Liquid Glass icon, to be put in the bundle's
 Contents/Resources together with CFBundleIconName=SMART in Info.plist) and
@@ -19,7 +19,7 @@ import subprocess
 import sys
 
 NAME = 'SMART'
-ART = 'app-icon-1024.png'
+ART = 'app-icon-fullbleed.png'
 
 
 def main(outdir):

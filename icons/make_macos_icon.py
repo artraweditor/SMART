@@ -4,7 +4,7 @@
 SMART runs as a script (no application bundle), so its Dock icon is set at
 run time, and macOS draws such an icon as-is: no rounded-square plate and no
 Liquid Glass.  This bakes a rounded square of the same style into the icon:
-the full-bleed artwork icons/app-icon-1024.png (brush strokes running out to
+the full-bleed artwork icons/app-icon-fullbleed.png (brush strokes running out to
 the corners) is cropped as in a Liquid Glass icon, masked with a squircle on
 Apple's 824-of-1024 icon grid, and given a soft shadow and a thin light rim.
 
@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image, ImageFilter
 
 icons = os.path.join(os.path.dirname(os.path.abspath(__file__)))
-logo = Image.open(os.path.join(icons, 'app-icon-1024.png')).convert('RGBA')
+logo = Image.open(os.path.join(icons, 'app-icon-fullbleed.png')).convert('RGBA')
 
 # --- macOS-style tile: same crop as the Liquid Glass icon (scale 1.1)
 S = 1.1
