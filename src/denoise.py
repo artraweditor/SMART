@@ -519,20 +519,33 @@ def denoise_dng(raw, opts, run=None, progress=None):
     if raw.kind == "linear":
         return denoise_linear_dng(raw, opts, run, progress)
     tile, margin = tiling(opts.tile, opts.margin)
+    # The network works on white balanced data, so that the channels of a
+    # neutral are roughly equal (it is much worse on dark, strongly
+    # colour-cast areas otherwise: the noise of the weak channels gets
+    # amplified by the white balance applied afterwards). So the as-shot
+    # gains are applied here and undone on the result, which stays in camera
+    # space. All channels are clipped at the lowest clipping level (that of
+    # a neutral), and white is 1. The noise model is for that data.
+    gains = raw.gains.astype(np.float32)
+    clip = float(gains.min())
+    h, w = raw.levels.shape
+    gmap = gains[np.tile(np.asarray(raw.cfa), (h // 2 + 1, w // 2 + 1))[:h, :w]]
+    x = np.minimum(raw.levels * gmap, clip) / clip
+    del gmap
     if opts.noise:
-        v = [float(x) for x in opts.noise]
+        v = [float(t) for t in opts.noise]
         if len(v) != 6:
             raise ValueError("the noise model wants six numbers")
         a, b = np.array(v[0::2]), np.array(v[1::2])
     else:
-        a, b, ninfo = estimate_noise(raw.levels, raw.cfa)
+        a, b, ninfo = estimate_noise(x, raw.cfa)
         if opts.verbose:
             print(f"noise a={a.tolist()} b={b.tolist()} {ninfo}",
                   file=sys.stderr)
     if run is None:
         run = make_run(opts, raw.kind)
-    rgb = denoise_mosaic(raw.levels, raw.cfa, a, b, run, tile, margin,
-                         progress)
+    rgb = denoise_mosaic(x, raw.cfa, a, b, run, tile, margin, progress)
+    rgb = rgb * (clip / gains)
     return Result(rgb, a.tolist(), b.tolist(),
                   opts.model_path().name, run.state["prov"][0])
 
