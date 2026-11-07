@@ -102,7 +102,7 @@ jobs:
           VERSION=$("$PY" -c "import re;print(re.search(r\"version = '([^']+)'\", open('src/config.py').read()).group(1))")
           NAME="SMART-${VERSION}-windows-x64"
           mv dist/SMART "dist/${NAME}"
-          (cd dist && 7z a -tzip -mx=9 -mfb=257 -mpass=15 "../${NAME}.zip" "${NAME}")
+          (cd dist && 7z a -tzip -mx=5 "../${NAME}.zip" "${NAME}")
           echo "file=${NAME}.zip" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
