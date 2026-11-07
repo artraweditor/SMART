@@ -207,17 +207,6 @@ class AIHealingEngine(BaseEngine):
         self._render(x0, y0, x1, y1)
         return box
 
-    def clear_strokes(self):
-        """Remove all painted coverage (undoable); returns the dirty box."""
-        if self.cover is None or not self.has_cover():
-            return None
-        h, w = self.cover.shape
-        old = self.cover.copy()
-        self.history.append(_Stroke((0, 0, w, h), old))
-        self.cover[:] = 0
-        self._render(0, 0, w, h)
-        return 0, 0, w, h
-
     # ------------------------------------------------------------ undo
     def undo_last(self):
         """Undo the last stroke or heal; returns the dirty box (or None)."""

@@ -661,7 +661,6 @@ class MainFrame(wx.Frame):
             shortHelp="Zoom to 100%")
         tb_zoom_fit = add_tool(wx.ID_ANY, "Zoom Fit", 'magnifier-fit.svg',
             shortHelp="Zoom to fit")
-        tb_clear = None
         heal_key = "Cmd+Enter" if wx.Platform == '__WXMAC__' else "Ctrl+Enter"
         if mode == 'heal':
             toolbar.AddSeparator()
@@ -671,8 +670,6 @@ class MainFrame(wx.Frame):
             toolbar.AddControl(self.btn_heal)
             self.btn_heal.Bind(wx.EVT_BUTTON, self.on_heal)
             self.busy_controls = [self.btn_heal]
-            tb_clear = add_tool(wx.ID_ANY, "Clear strokes", 'brush-clear.svg',
-                shortHelp="Remove the painted areas (Esc)")
             toolbar.AddSeparator()
             self.spin_radius = self._add_spin(
                 toolbar, "Radius", engine.radius, 1, 2000, 1, 0)
@@ -725,8 +722,6 @@ class MainFrame(wx.Frame):
                                     self.id_heal),
                 wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER,
                                     self.id_heal),
-                wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_ESCAPE,
-                                    tb_clear.GetId()),
             ]
         if mode == 'denoise':
             accel_entries += [
@@ -761,8 +756,6 @@ class MainFrame(wx.Frame):
             self.Bind(wx.EVT_TOOL, self.on_undo, tb_undo)
         if mode == 'heal':
             self.Bind(wx.EVT_MENU, self.on_heal, id=self.id_heal)
-            for ev in (wx.EVT_MENU, wx.EVT_TOOL):
-                self.Bind(ev, self.on_clear_strokes, tb_clear)
 
         self.Bind(wx.EVT_MENU, self.on_close, id=wx.ID_EXIT)
         self.Bind(wx.EVT_CLOSE, self.on_close)
@@ -979,11 +972,6 @@ class MainFrame(wx.Frame):
         self.image_panel.undo()
 
     # ------------------------------------------------------------ healing
-    def on_clear_strokes(self, event):
-        box = self.engine.clear_strokes()
-        if box is not None:
-            self.image_panel.refresh_image_box(box)
-
     def _set_busy(self, busy):
         self.image_panel.input_enabled = not busy
         for c in self.busy_controls:
