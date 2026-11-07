@@ -37,6 +37,10 @@ def brush_profile(dist, radius, feather):
     return (1.0 - t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
+class Cancelled(Exception):
+    """Raised from the progress callback to abort a heal."""
+
+
 class AIHealingEngine(BaseEngine):
     def __init__(self, conf):
         super().__init__(conf)
@@ -54,6 +58,7 @@ class AIHealingEngine(BaseEngine):
         self._stroke_bbox = None
         self._seed = 0
         self.busy = False
+        self._cancel = threading.Event()
 
     def busy_now(self):
         return self.busy
@@ -250,15 +255,24 @@ class AIHealingEngine(BaseEngine):
         if self.img is None or not self.has_cover() or self.busy:
             return False
         self.busy = True
+        self._cancel.clear()
         cover = self.cover.copy()
         self._seed += 1
         seed = self._seed
 
+        def check(k, n):
+            if self._cancel.is_set():
+                raise Cancelled()
+            if progress:
+                progress(k, n)
+
         def work():
             try:
+                if self._cancel.is_set():
+                    raise Cancelled()
                 filler = self.get_filler()
                 patches = healmod.heal(self.img, cover, filler, self.conf,
-                                       seed, progress=progress)
+                                       seed, progress=check)
             except Exception as e:
                 self.busy = False
                 on_error(e)
@@ -267,6 +281,10 @@ class AIHealingEngine(BaseEngine):
 
         threading.Thread(target=work, daemon=True).start()
         return True
+
+    def cancel(self):
+        """Ask a running heal to stop (after the current area)."""
+        self._cancel.set()
 
     def apply_patches(self, patches, cover_used):
         """Apply the result of a heal (on the main thread).  Returns the

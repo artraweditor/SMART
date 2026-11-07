@@ -656,12 +656,16 @@ class MainFrame(wx.Frame):
             shortHelp="Zoom to 100%")
         tb_zoom_fit = add_tool(wx.ID_ANY, "Zoom Fit", 'magnifier-fit.svg',
             shortHelp="Zoom to fit")
-        tb_heal = tb_clear = None
+        tb_clear = None
         heal_key = "Cmd+Enter" if wx.Platform == '__WXMAC__' else "Ctrl+Enter"
         if mode == 'heal':
             toolbar.AddSeparator()
-            tb_heal = add_tool(wx.ID_ANY, "Heal", 'heal.svg',
-                shortHelp=f"Heal the painted areas ({heal_key})")
+            self.btn_heal = wx.Button(toolbar, label="Heal")
+            self.btn_heal.SetToolTip(
+                f"Heal the painted areas ({heal_key})")
+            toolbar.AddControl(self.btn_heal)
+            self.btn_heal.Bind(wx.EVT_BUTTON, self.on_heal)
+            self.busy_controls = [self.btn_heal]
             tb_clear = add_tool(wx.ID_ANY, "Clear strokes", 'brush-clear.svg',
                 shortHelp="Remove the painted areas (Esc)")
             toolbar.AddSeparator()
@@ -675,6 +679,7 @@ class MainFrame(wx.Frame):
             self.Bind(wx.EVT_TEXT_ENTER, self.on_brush_changed)
             self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
         self.id_denoise = wx.NewIdRef()
+        self.id_heal = wx.NewIdRef()
         if mode == 'denoise':
             toolbar.AddSeparator()
             toolbar.AddControl(wx.StaticText(toolbar, label=" Model "))
@@ -710,9 +715,9 @@ class MainFrame(wx.Frame):
         if mode == 'heal':
             accel_entries += [
                 wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_RETURN,
-                                    tb_heal.GetId()),
+                                    self.id_heal),
                 wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER,
-                                    tb_heal.GetId()),
+                                    self.id_heal),
                 wx.AcceleratorEntry(wx.ACCEL_NORMAL, wx.WXK_ESCAPE,
                                     tb_clear.GetId()),
             ]
@@ -747,8 +752,8 @@ class MainFrame(wx.Frame):
         if mode != 'denoise':
             self.Bind(wx.EVT_TOOL, self.on_undo, tb_undo)
         if mode == 'heal':
+            self.Bind(wx.EVT_MENU, self.on_heal, id=self.id_heal)
             for ev in (wx.EVT_MENU, wx.EVT_TOOL):
-                self.Bind(ev, self.on_heal, tb_heal)
                 self.Bind(ev, self.on_clear_strokes, tb_clear)
 
         self.Bind(wx.EVT_MENU, self.on_close, id=wx.ID_EXIT)
@@ -980,26 +985,60 @@ class MainFrame(wx.Frame):
                 self.image_panel.SetCursor(wx.Cursor(wx.CURSOR_BLANK))
 
     def on_heal(self, event):
+        import heal_engine
         e = self.engine
-        if e.img is None:
+        if e.img is None or e.busy_now():
             return
         if not e.has_cover():
             self.statusbar.SetStatusText(
                 "Nothing to heal: paint over the image with shift+drag")
             return
         self._set_busy(True)
-        self.statusbar.SetStatusText(
-            "Healing... (the first run loads the model)")
+        self.statusbar.SetStatusText("Healing...")
+        state = {'k': 0, 'n': 0, 'out': None}
 
         def progress(k, n):
-            wx.CallAfter(self.statusbar.SetStatusText,
-                         f"Healing... area {min(k + 1, n)} of {n}")
+            state['k'], state['n'] = k, n
+
+        def finish(kind, *args):
+            state['out'] = (kind, args)
 
         if not e.heal_async(
-                lambda p, c: wx.CallAfter(self._heal_done, p, c),
-                lambda ex: wx.CallAfter(self._heal_failed, ex),
+                lambda p, c: finish('done', p, c),
+                lambda ex: finish('error', ex),
                 progress):
             self._set_busy(False)
+            return
+        dlg = wx.ProgressDialog(
+            "Healing", "Loading the model...", maximum=1000, parent=self,
+            style=wx.PD_APP_MODAL | wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME |
+            wx.PD_SMOOTH)
+        cancelling = False
+        while state['out'] is None:
+            k, n = state['k'], state['n']
+            if cancelling:
+                keep = dlg.Pulse("Cancelling...")
+            elif n == 0:
+                keep = dlg.Pulse("Loading the model...")
+            else:
+                keep = dlg.Update(min(int(1000 * k / n), 999),
+                                  f"Healing... area {min(k + 1, n)} of {n}")
+            if isinstance(keep, tuple):
+                keep = keep[0]
+            if not keep and not cancelling:
+                cancelling = True
+                e.cancel()
+            wx.MilliSleep(50)
+            wx.YieldIfNeeded()
+        dlg.Destroy()
+        kind, args = state['out']
+        if kind == 'done':
+            self._heal_done(*args)
+        elif isinstance(args[0], heal_engine.Cancelled):
+            self._set_busy(False)
+            self.statusbar.SetStatusText("Healing cancelled")
+        else:
+            self._heal_failed(args[0])
 
     def _heal_done(self, patches, cover):
         box = self.engine.apply_patches(patches, cover)
