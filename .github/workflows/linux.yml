@@ -132,6 +132,15 @@ jobs:
             --exclude-module torch --exclude-module torchvision \
             src/main.py
 
+      - name: Size report
+        run: |
+          du -sh dist/SMART
+          echo "--- largest top-level items"
+          du -sh dist/SMART/_internal/* | sort -rh | head -25
+          echo "--- largest files"
+          find dist/SMART -type f -printf '%s %P\n' | sort -rn | head -40 \
+            | awk '{printf "%7.1f MB  %s\n", $1/1048576, $2}'
+
       - name: Smoke test
         run: |
           xvfb-run -a dist/SMART/SMART --help
