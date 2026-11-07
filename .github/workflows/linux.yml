@@ -77,7 +77,7 @@ jobs:
         run: |
           "$PY" -m PyInstaller --noconfirm --clean --name SMART \
             --paths src \
-            --icon icons/app-icon.png \
+            --icon icons/app-icon-1024.png \
             --add-data "icons:icons" \
             --add-data "data:data" \
             --add-data "exiftool-bundle:exiftool" \

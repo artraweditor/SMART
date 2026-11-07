@@ -1,5 +1,6 @@
 import wx
 import os
+import platform
 import threading
 from pathlib import Path
 import numpy as np
@@ -1263,13 +1264,31 @@ def ensure_mode_model(conf, mode):
     return ensure_model_file(None, what, name, path, url, size, sha) is True
 
 
-def app_icon():
-    """The application icon, or None if it cannot be loaded."""
-    icon_path = config.resource_dir() / 'icons' / 'app-icon.png'
-    if not icon_path.exists():
-        return None
-    icon = wx.Icon(str(icon_path), wx.BITMAP_TYPE_PNG)
-    return icon if icon.IsOk() else None
+def app_icon(macos_tile=False):
+    """The application icon, or None if it cannot be loaded.
+
+    With macos_tile=True, the rounded-square version used for the Dock on
+    macOS >= 26 (see set_dock_icon), if there is one."""
+    names = ['app-icon-1024.png']
+    if macos_tile:
+        names.insert(0, 'app-icon-macos.png')
+    for name in names:
+        icon_path = config.resource_dir() / 'icons' / name
+        if icon_path.exists():
+            icon = wx.Icon(str(icon_path), wx.BITMAP_TYPE_PNG)
+            if icon.IsOk():
+                return icon
+    return None
+
+
+def macos_version():
+    """The macOS major version, or 0 elsewhere (or if unknown)."""
+    if wx.Platform != '__WXMAC__':
+        return 0
+    try:
+        return int(platform.mac_ver()[0].split('.')[0])
+    except (ValueError, IndexError):
+        return 0
 
 
 _dock_icon = None   # keep a reference, or the icon is garbage collected
@@ -1279,8 +1298,12 @@ def set_dock_icon():
     """macOS: replace the generic Python icon in the Dock (when run as a
     script, rather than from an application bundle) with ours."""
     global _dock_icon
-    icon = app_icon()
-    if wx.Platform != '__WXMAC__' or icon is None:
+    if wx.Platform != '__WXMAC__' or config.is_frozen():
+        return      # (a bundle has its own icon)
+    # a run-time icon is drawn as-is: from macOS 26 on, where the other icons
+    # are rounded squares filling the whole tile, use one of the same style
+    icon = app_icon(macos_tile=macos_version() >= 26)
+    if icon is None:
         return
     try:
         from wx.adv import TaskBarIcon, TBI_DOCK

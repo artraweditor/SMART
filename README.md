@@ -1,4 +1,4 @@
-![logo](icons/app-icon.png)
+<img src="icons/app-icon-1024.png" alt="logo" width="160">
 
 # SMART
 

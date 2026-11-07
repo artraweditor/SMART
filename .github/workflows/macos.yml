@@ -58,19 +58,55 @@ jobs:
           chmod +x exiftool-bundle/exiftool
           exiftool-bundle/exiftool -ver
 
+      - name: Select Xcode 26 for the app icon
+        # icons/make_liquid_glass_icon.py compiles the icon into a Liquid
+        # Glass Assets.car with actool, which needs Xcode 26
+        run: |
+          xc=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$xc" ]; then
+              sudo xcode-select -s "$xc"
+          else
+              echo "::warning::Xcode 26 not found, the app will use a plain icon"
+          fi
+          xcrun actool --version | head -5
+
+      - name: Build the app icon
+        run: |
+          if "$PY" icons/make_liquid_glass_icon.py build/icon; then
+              echo "ICON=build/icon/SMART.icns" >> "$GITHUB_ENV"
+              echo "LIQUID_GLASS_ICON=build/icon/Assets.car" >> "$GITHUB_ENV"
+          else
+              echo "::warning::cannot build the Liquid Glass icon, using the plain one"
+              echo "ICON=icons/app-icon-1024.png" >> "$GITHUB_ENV"
+          fi
+
       - name: Build with PyInstaller
         run: |
           "$PY" -m PyInstaller --noconfirm --clean --name SMART \
             --windowed \
             --osx-bundle-identifier eu.fbk.smart \
             --paths src \
-            --icon icons/app-icon.png \
+            --icon "$ICON" \
             --add-data "icons:icons" \
             --add-data "data:data" \
             --add-data "exiftool-bundle:exiftool" \
             --collect-all sam2 --collect-all hydra --collect-all omegaconf \
             --collect-submodules imagecodecs --collect-binaries onnxruntime \
             src/main.py
+
+      - name: Add the Liquid Glass icon
+        # Assets.car + CFBundleIconName make macOS 26 draw the icon filling the
+        # whole rounded square (the .icns, set by PyInstaller, is the fallback)
+        if: env.LIQUID_GLASS_ICON != ''
+        run: |
+          res=dist/SMART.app/Contents/Resources
+          plist=dist/SMART.app/Contents/Info.plist
+          cp "$LIQUID_GLASS_ICON" "$res/Assets.car"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIconName SMART" "$plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string SMART" "$plist"
+          # the bundle changed after PyInstaller signed it: sign it again
+          codesign --force --deep --sign - dist/SMART.app
+          codesign --verify --deep --strict dist/SMART.app
 
       - name: Smoke test
         run: |
