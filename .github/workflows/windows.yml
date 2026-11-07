@@ -44,10 +44,7 @@ jobs:
         run: |
           "$PY" --version
           "$PY" -m pip install --upgrade pip setuptools wheel
-          # CPU-only PyTorch: the CUDA wheels would make the bundle huge
-          "$PY" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # sam2 builds against the already-installed torch; skip the CUDA extension
-          SAM2_BUILD_CUDA=0 "$PY" -m pip install --no-build-isolation -r requirements.txt
+          "$PY" -m pip install -r requirements.txt
           "$PY" -m pip install pyinstaller
 
       - name: Get ExifTool

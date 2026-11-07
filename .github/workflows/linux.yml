@@ -1,4 +1,4 @@
-name: Build (Linux x64)
+name: Build (Linux x64, arm64)
 
 on:
   push:
@@ -18,12 +18,30 @@ permissions:
 env:
   PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
   PBS_TAG: ${{ inputs.pbs_tag || '' }}
-  PBS_TRIPLE: x86_64-unknown-linux-gnu
+  # wxPython has no prebuilt Linux arm64 wheels: the arm64 job builds this
+  # version from the sdist (the x64 one takes the latest prebuilt wheel)
+  WXPYTHON_VERSION: '4.2.5'
 
 jobs:
   build:
-    # oldest available image, for the widest glibc compatibility
-    runs-on: ubuntu-22.04
+    name: Build (${{ matrix.arch }})
+    # oldest available images, for the widest glibc compatibility
+    runs-on: ${{ matrix.runner }}
+    # building wxPython from source takes a long time
+    timeout-minutes: 240
+    env:
+      PBS_TRIPLE: ${{ matrix.triple }}
+      ARCH: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+            triple: x86_64-unknown-linux-gnu
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+            triple: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +50,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-0 libnotify4 libsdl2-2.0-0 \
             libwebkit2gtk-4.0-37 libxtst6 xvfb
+
+      - name: Install wxPython build dependencies (arm64)
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get install -y build-essential pkg-config libgtk-3-dev \
+            libwebkit2gtk-4.0-dev libsdl2-dev libnotify-dev libgl1-mesa-dev \
+            libglu1-mesa-dev libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev libjpeg-dev libpng-dev libtiff-dev \
+            libsm-dev libxtst-dev
 
       - name: Get Python (python-build-standalone)
         env:
@@ -44,21 +71,38 @@ jobs:
           tar -xzf pbs/*.tar.gz -C pbs
           echo "PY=$PWD/pbs/python/bin/python3" >> "$GITHUB_ENV"
 
+      - name: Cache the wxPython wheel (arm64)
+        if: matrix.arch == 'arm64'
+        id: wxcache
+        uses: actions/cache@v4
+        with:
+          path: wxwheel
+          key: wxpython-${{ env.WXPYTHON_VERSION }}-linux-arm64-py${{ env.PYTHON_VERSION }}
+
+      - name: Build wxPython from source (arm64)
+        if: matrix.arch == 'arm64' && steps.wxcache.outputs.cache-hit != 'true'
+        run: |
+          "$PY" -m pip install --upgrade pip setuptools wheel
+          # the sdist build runs the wxWidgets build: about an hour
+          "$PY" -m pip wheel --no-deps --wheel-dir wxwheel \
+            "wxPython==${WXPYTHON_VERSION}"
+          ls -l wxwheel
+
       - name: Install dependencies
         run: |
           "$PY" --version
           "$PY" -m pip install --upgrade pip setuptools wheel
-          # CPU-only PyTorch: the CUDA wheels would make the bundle huge
-          "$PY" -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # sam2 builds against the already-installed torch; skip the CUDA extension
-          # wxPython has no Linux wheels on PyPI: take the prebuilt one from the
-          # wxPython extras server (slow at times, hence the long timeout and
-          # retries). --only-binary: never fall back to a (failing) source build.
-          "$PY" -m pip install --only-binary wxPython --timeout 120 --retries 10 \
-            --find-links https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-22.04/ \
-            wxPython
-          SAM2_BUILD_CUDA=0 "$PY" -m pip install --no-build-isolation \
-            -r requirements.txt
+          if [ "$ARCH" = arm64 ]; then
+            "$PY" -m pip install --no-index --find-links wxwheel wxPython
+          else
+            # wxPython has no Linux wheels on PyPI: take the prebuilt one from the
+            # wxPython extras server (slow at times, hence the long timeout and
+            # retries). --only-binary: never fall back to a (failing) source build.
+            "$PY" -m pip install --only-binary wxPython --timeout 120 --retries 10 \
+              --find-links https://extras.wxpython.org/wxPython4/extras/linux/gtk3/ubuntu-22.04/ \
+              wxPython
+          fi
+          "$PY" -m pip install -r requirements.txt
           "$PY" -m pip install pyinstaller
 
       - name: Get ExifTool
@@ -81,8 +125,8 @@ jobs:
             --add-data "icons:icons" \
             --add-data "data:data" \
             --add-data "exiftool-bundle:exiftool" \
-            --collect-all sam2 --collect-all hydra --collect-all omegaconf \
             --collect-submodules imagecodecs --collect-binaries onnxruntime \
+            --exclude-module torch --exclude-module torchvision \
             src/main.py
 
       - name: Smoke test
@@ -96,14 +140,14 @@ jobs:
         id: pkg
         run: |
           VERSION=$("$PY" -c "import re;print(re.search(r\"version = '([^']+)'\", open('src/config.py').read()).group(1))")
-          NAME="SMART-${VERSION}-linux-x64"
+          NAME="SMART-${VERSION}-linux-${ARCH}"
           mv dist/SMART "dist/${NAME}"
           tar -C dist -czf "${NAME}.tar.gz" "${NAME}"
           echo "file=${NAME}.tar.gz" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SMART-linux-x64
+          name: SMART-linux-${{ matrix.arch }}
           path: ${{ steps.pkg.outputs.file }}
 
       - name: Attach to release
