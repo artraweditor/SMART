@@ -62,23 +62,16 @@ jobs:
           exiftool-bundle/exiftool.exe -ver
 
       - name: Build with PyInstaller
-        # On Windows --add-data uses ';' as separator. --windowed: no
-        # console; the program redirects its text output to a temporary
-        # file shown in notepad (see src/frozen_env.py).
+        # SMART.spec builds two executables sharing one bundle:
+        # SMART.exe (windowed: text output goes to a temporary file shown
+        # in notepad, see src/frozen_env.py) and SMART-console.exe (for
+        # command-line use). The latter is renamed to SMART.com: cmd and
+        # PowerShell prefer .com over .exe, so typing "SMART" in a terminal
+        # runs the console build, while double-clicking SMART.exe runs the
+        # windowed one (same trick as devenv.com/devenv.exe).
         run: |
-          "$PY" -m PyInstaller --noconfirm --clean --name SMART \
-            --windowed \
-            --paths src \
-            --icon icons/app-icon-1024.png \
-            --add-data "icons;icons" \
-            --add-data "data;data" \
-            --add-data "exiftool-bundle;exiftool" \
-            --collect-all sam2 --collect-all hydra --collect-all omegaconf \
-            --collect-submodules imagecodecs --collect-binaries onnxruntime \
-            --exclude-module tkinter --exclude-module matplotlib \
-            --exclude-module IPython --exclude-module pytest \
-            --exclude-module torch.utils.tensorboard \
-            src/main.py
+          "$PY" -m PyInstaller --noconfirm --clean SMART.spec
+          mv dist/SMART/SMART-console.exe dist/SMART/SMART.com
 
       - name: Size report
         run: |
@@ -95,6 +88,12 @@ jobs:
           Start-Process -Wait -FilePath dist\SMART\SMART.exe -ArgumentList '--help'
           Get-Content help.txt
           if (-not (Select-String -Path help.txt -Pattern 'usage:' -Quiet)) { throw "no --help output" }
+          # console executable, invoked as a user would: "SMART" (no extension)
+          $out = cmd /c "dist\SMART\SMART --help 2>&1" | Out-String
+          if ($out -notmatch 'usage:') { throw "no --help output (cmd, SMART.com)" }
+          $env:PATH = "$PWD\dist\SMART;$env:PATH"
+          $out = SMART --help 2>&1 | Out-String
+          if ($out -notmatch 'usage:') { throw "no --help output (PowerShell, SMART.com)" }
           dist\SMART\_internal\exiftool\exiftool.exe -ver
 
       - name: Package
