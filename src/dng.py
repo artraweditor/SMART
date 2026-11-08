@@ -49,6 +49,7 @@ class MosaicDNG:
     iso: float | None = None
     unique: str | None = None   # UniqueCameraModel
     black: float = 0.0          # mean black level, in raw units
+    opcodes: bytes | None = None   # OpcodeList3 (lens corrections)
 
     kind = 'mosaic'
 
@@ -77,6 +78,7 @@ class LinearDNG:
     iso: float | None = None
     unique: str | None = None   # UniqueCameraModel
     black: float = 0.0          # mean black level, in raw units
+    opcodes: bytes | None = None   # OpcodeList3 (lens corrections)
 
     kind = 'linear'
 
@@ -153,6 +155,15 @@ def _open(path):
         raise DNGError(f'cannot read {path}: {e}') from e
 
 
+def _opcodes(page):
+    """The raw OpcodeList3 (applied after demosaicing, e.g. the lens
+    distortion/vignetting opcodes of `ART-cli --dng-lens-opcodes`)."""
+    t = page.tags.get('OpcodeList3')
+    if t is None or not isinstance(t.value, (bytes, bytearray)):
+        return None
+    return bytes(t.value) or None
+
+
 def _metadata(tf, page):
     nt = page.tags.get('AsShotNeutral')
     neutral = _floats(nt) if nt is not None else np.ones(3)
@@ -164,7 +175,8 @@ def _metadata(tf, page):
         make=_tag(page, 'Make'), model=_tag(page, 'Model'),
         xyz_cam=np.asarray(_color_matrix(page), np.float64),
         neutral=neutral / neutral[1], iso=_iso(tf, page),
-        unique=_tag(page, 'UniqueCameraModel'))
+        unique=_tag(page, 'UniqueCameraModel'),
+        opcodes=_opcodes(page))
 
 
 def _white(data, page):
@@ -387,7 +399,7 @@ def _rational(x, den=10000):
 
 
 def write_linear_dng(path, rgb, *, make, model, xyz_cam, neutral,
-                     orientation=1, software="SMART", bits=16, unique=None):
+                     orientation=1, software="SMART", bits=16, unique=None, opcodes=None):
     """Write an HxWx3 float32 linear image as a LinearRaw DNG: 32-bit float
     (`bits=32`) or 16-bit unsigned integer (`bits=16`, white = 65535,
     negatives clipped).
@@ -437,6 +449,8 @@ def write_linear_dng(path, rgb, *, make, model, xyz_cam, neutral,
                [_rational(v, 1000000) for v in neutral]),
         _entry(50778, _SHORT, [21]),  # CalibrationIlluminant1 = D65
     ]
+    if opcodes:
+        e.append((51022, 7, len(opcodes), bytes(opcodes)))
     # StripOffsets / StripByteCounts need the final layout: IFD, then the
     # out-of-line values, then the pixel data (4-aligned).
     e += [(273, _LONG, 1, b"\0\0\0\0"),

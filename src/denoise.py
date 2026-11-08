@@ -659,7 +659,8 @@ def save_result(path, res, raw, opts, exiftool=None):
             path, res.rgb, make=raw.make, model=raw.model,
             unique=getattr(raw, 'unique', None),
             xyz_cam=raw.xyz_cam, neutral=raw.neutral,
-            orientation=raw.orientation, bits=opts.dng_bits)
+            orientation=raw.orientation, bits=opts.dng_bits,
+            opcodes=getattr(raw, 'opcodes', None))
         return copy_exif(exiftool, raw.path, path)
     import tifffile
     rgb = res.rgb
