@@ -99,9 +99,9 @@ with a few operations rewritten for CoreML by `tools/make_lama_coreml.py`.
 ### Raw denoising
 
 Download the denoising model(s) with `SMART --download-denoise-model`
-(the configured one, `balanced` by default), `SMART --download-denoise-model
-best`, or `SMART --download-denoise-model all` (`fast`, `balanced` and
-`best` are 4.9, 9 and 20 MB; larger is better but slower). Each choice
+(the configured one, `medium` by default), `SMART --download-denoise-model
+large`, or `SMART --download-denoise-model all` (`small`, `medium` and
+`large` are 4.9, 9 and 20 MB; larger is better but slower). Each choice
 also has a network for linear DNGs (the TreeNet `light`, standard and
 `heavy` models: 1.5, 10 and 22 MB), downloaded together with it. In the
 GUI, a missing model is offered for download when needed. The models are
@@ -154,8 +154,8 @@ The input must be a DNG as written by `ART-cli --raw-preprocess=mosaic` or
 preprocessing: dead pixels, flat field, white balance baking, ...):
 uncompressed, 16-bit integer or 32-bit float, either a mosaic with one
 sample per pixel (Bayer pattern; X-Trans is not supported by the model) or
-a linear image with three samples per pixel. The model choices (`fast`,
-`balanced`, `best`) are the same for both: the greycard denoiser (which
+a linear image with three samples per pixel. The model choices (`small`,
+`medium`, `large`) are the same for both: the greycard denoiser (which
 demosaics and denoises at once) is used for mosaics, and TreeNet for linear
 files. The DNG reader is
 built on tifffile and nothing else (no rawpy/LibRaw). The black level
@@ -186,8 +186,8 @@ above white; saturated pixels are left as they are.
 Without the GUI:
 
     SMART --mode denoise --cli photo.dng -o photo.tif
-    SMART --mode denoise --cli linear.dng -m best -o linear-dn.dng
-    SMART --mode denoise --cli photo.dng -m best --provider cpu
+    SMART --mode denoise --cli linear.dng -m large -o linear-dn.dng
+    SMART --mode denoise --cli photo.dng -m large --provider cpu
     SMART --mode denoise --cli photo.dng -o photo-dn.dng --dng-bits 32
     SMART --mode denoise --cli photo.dng --provider coreml
 

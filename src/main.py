@@ -28,8 +28,8 @@ def getopts():
     p.add_argument('--download-denoise-model', nargs='?', const='config',
                    choices=['config', 'all'] + list(config.DENOISE_MODELS),
                    metavar='MODEL',
-                   help='download a raw denoising model (fast, balanced or '
-                   'best; default: the configured one; all: every one) '
+                   help='download a raw denoising model (small, medium or '
+                   'large; default: the configured one; all: every one) '
                    'and exit')
     g = p.add_argument_group(
         'raw denoising (--mode denoise)',
@@ -43,7 +43,7 @@ def getopts():
     g.add_argument('-o', '--output', metavar='FILE',
                    help='output file (default: INPUT-denoised.tif)')
     g.add_argument('-m', '--model', choices=list(config.DENOISE_MODELS),
-                   help='model (default: balanced); mosaiced and linear DNGs '
+                   help='model (default: medium); mosaiced and linear DNGs '
                    'have their own networks for each choice')
     g.add_argument('--iso', type=float,
                    help='linear DNGs: the ISO the model is conditioned on '

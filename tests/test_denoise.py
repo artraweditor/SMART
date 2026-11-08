@@ -335,13 +335,13 @@ def test_denoise_linear_dng_stays_in_camera_space(tmp_path):
 def test_models_for_both_kinds(tmp_path):
     import config
     assert set(config.LINEAR_DENOISE_MODELS) == set(config.DENOISE_MODELS) \
-        == {'fast', 'balanced', 'best'}
+        == {'small', 'medium', 'large'}
     for tier in config.DENOISE_MODELS:
         a = config.Config().get_denoise_model_file(tier)
         b = config.Config().get_denoise_model_file(tier, 'linear')
         assert a != b and b.name.startswith('treenet')
         assert config.denoise_models('linear')[tier][0] == b.name
-    o = denoise.Options(model='best')
+    o = denoise.Options(model='large')
     assert 'denoise-v20' in str(config.Config().get_denoise_model_file(
         o.model))
     with pytest.raises(denoise.ModelMissing):

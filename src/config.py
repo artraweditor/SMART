@@ -27,7 +27,7 @@ def resource_dir():
 # sha256), (decoder file name, url, size, sha256)).
 # The files are in https://huggingface.co/agriggio/smart-onnx-models (pinned to
 # a commit).
-_HF_URL = 'https://huggingface.co/agriggio/smart-onnx-models/resolve/f5e0eb009abde02e885d6464d62c22f4d2435f4b/'
+_HF_URL = 'https://huggingface.co/agriggio/smart-onnx-models/resolve/0a80c612c962a226e261c66c78e00354543cb3fa/'
 _SAM2_URL = _HF_URL
 def _sam2(q, esize=None, esha=None, dsize=None, dsha=None):
     def f(kind, size, sha):
@@ -69,40 +69,36 @@ HEAL_MODEL = (
     'f7707ac0db751c9cf35ec3eee149032068862c96e3f7ffa6109eef97ec36a414',
 )
 
-# model registry for raw denoising (greycard's models, GPL-3.0):
+# model registry for raw denoising (greycard's models, GPL-3.0, copied from
+# https://huggingface.co/jessolmstead/greycard-denoise):
 # tier -> (file name, url, size, sha256)
-_DENOISE_URL = 'https://huggingface.co/jessolmstead/greycard-denoise/resolve/main/'
 DENOISE_MODELS = {
-    'fast': ('denoise-v19.onnx', _DENOISE_URL + 'denoise-v19.onnx',
-             4_932_834,
-             '319d024a39d3e31c95e99c91bb5c089691707cbf13f4f077c1c6e49d10235c49'),
-    'balanced': ('denoise-v15.onnx', _DENOISE_URL + 'denoise-v15.onnx',
-                 9_037_296,
-                 'f5845119e0b0ee63c57aad38129aed1c8925e60ec9b7838c6b7a0fa23a84a546'),
-    'best': ('denoise-v20.onnx', _DENOISE_URL + 'denoise-v20.onnx',
-             20_297_204,
-             'c20aed71a45b2a984570e09d8456c54ce8eff43a334b54c7ebb480c21518f9be'),
+    'small': ('denoise-v19.onnx', _HF_URL + 'denoise-v19.onnx',
+              4_932_834,
+              '319d024a39d3e31c95e99c91bb5c089691707cbf13f4f077c1c6e49d10235c49'),
+    'medium': ('denoise-v15.onnx', _HF_URL + 'denoise-v15.onnx',
+               9_037_296,
+               'f5845119e0b0ee63c57aad38129aed1c8925e60ec9b7838c6b7a0fa23a84a546'),
+    'large': ('denoise-v20.onnx', _HF_URL + 'denoise-v20.onnx',
+              20_297_204,
+              'c20aed71a45b2a984570e09d8456c54ce8eff43a334b54c7ebb480c21518f9be'),
 }
 
 # TreeNet denoisers of RawForge (MIT) for demosaiced linear DNGs, as
-# repackaged in https://huggingface.co/AyedaOk/rawlab-models; same tiers as
-# DENOISE_MODELS: tier -> (file name, url, size, sha256)
-_TREENET_URL = 'https://huggingface.co/AyedaOk/rawlab-models/resolve/main/models/'
+# repackaged in https://huggingface.co/AyedaOk/rawlab-models (copied to
+# _HF_URL); same tiers as DENOISE_MODELS: tier -> (file name, url, size, sha256)
 LINEAR_DENOISE_MODELS = {
-    'fast': (
+    'small': (
         'treenet-light.onnx',
-        _TREENET_URL + 'rawdenoise-rawforge-shadowweightedl1-light/1.0/'
-        'model.onnx', 1_510_483,
+        _HF_URL + 'treenet-light.onnx', 1_510_483,
         '082612f3de352af7353cb3de893f8dd876b8cb942c53cf5c5f8ab4ae2cc9bf78'),
-    'balanced': (
+    'medium': (
         'treenet.onnx',
-        _TREENET_URL + 'rawdenoise-rawforge-shadowweightedl1/1.0/model.onnx',
-        10_073_980,
+        _HF_URL + 'treenet.onnx', 10_073_980,
         '76a07047a33dba3fa27330cec483b43bb57ecb1c1f10db8d979355ce110e34c9'),
-    'best': (
+    'large': (
         'treenet-heavy.onnx',
-        _TREENET_URL + 'rawdenoise-rawforge-shadowweightedl1-heavy/1.0/'
-        'model.onnx', 21_863_084,
+        _HF_URL + 'treenet-heavy.onnx', 21_863_084,
         '0074e2f7bec359c613305811c2c4e7123f738010fb3a98ce67044c48ecfc0129'),
 }
 
@@ -131,7 +127,7 @@ class Config:
     heal_even: bool = True
     heal_regrain: bool = True
     # raw denoising
-    denoise_model: str = "balanced"     # fast, balanced or best
+    denoise_model: str = "medium"       # small, medium or large
     denoise_provider: str = "auto"      # onnxruntime provider
     denoise_tile: int = 1024
     denoise_margin: int = 96

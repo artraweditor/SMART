@@ -416,7 +416,7 @@ class Cancelled(Exception):
 
 @dataclasses.dataclass
 class Options:
-    model: str = "balanced"          # fast, balanced or best
+    model: str = "medium"            # small, medium or large
     model_file: str | None = None    # ONNX file overriding the model
     provider: str = "auto"
     noise: tuple | None = None       # (aR, bR, aG, bG, aB, bB) or estimate

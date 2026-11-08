@@ -12,9 +12,9 @@ AI healing models (see `SMART --download-heal-model`) are also put here:
    provider)
 
 Raw denoising models (see `SMART --download-denoise-model`) are also put here:
- - denoise-v19.onnx (fast), denoise-v15.onnx (balanced), denoise-v20.onnx
-   (best): greycard, GPL-3.0,
+ - denoise-v19.onnx (small), denoise-v15.onnx (medium), denoise-v20.onnx
+   (large): greycard, GPL-3.0,
    https://huggingface.co/jessolmstead/greycard-denoise
- - treenet-light.onnx (fast), treenet.onnx (balanced), treenet-heavy.onnx
-   (best), for linear DNGs: RawForge TreeNet, MIT,
+ - treenet-light.onnx (small), treenet.onnx (medium), treenet-heavy.onnx
+   (large), for linear DNGs: RawForge TreeNet, MIT,
    https://huggingface.co/AyedaOk/rawlab-models
