@@ -548,6 +548,7 @@ class MainFrame(wx.Frame):
                  save_as=None):
         self.mode = mode
         self.save_as = save_as  # fixed default save name (no Open button)
+        self._save_as_direct = None  # see save_mask
         self.outdir = outdir    # default directory of the save dialog
         title = {'mask': "SMART AI mask builder", 'heal': "SMART AI healing",
                  'denoise': "SMART raw denoising"}[mode]
@@ -886,8 +887,13 @@ class MainFrame(wx.Frame):
             self.statusbar.SetStatusText(
                 "Nothing to save: denoise the image first")
             return True
-        if self.save_as is not None and not os.path.exists(self.save_as):
-            return self._write_output(self.save_as)
+        if self.save_as is not None:
+            # decided at the first save: if the file does not exist yet, it
+            # is written (and overwritten by the next saves) without asking
+            if self._save_as_direct is None:
+                self._save_as_direct = not os.path.exists(self.save_as)
+            if self._save_as_direct:
+                return self._write_output(self.save_as)
         dd = self.outdir or str(self.filename.parent)
         if self.mode == 'denoise':
             title = "Save Denoised Image"
@@ -917,7 +923,7 @@ class MainFrame(wx.Frame):
         # NOTE: wxWidgets 3.2.9 on macOS asserts (index out of bounds) in
         # FileDialog.ShowModal() with FD_SAVE and a single wildcard filter,
         # so we add a second one as a workaround
-        if self.save_as is not None:    # exists already: ask
+        if self.save_as is not None:    # existed at the first save: ask
             dd, df = os.path.split(self.save_as)
         with wx.FileDialog(self, title,
                            wildcard=wildcard,

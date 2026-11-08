@@ -76,9 +76,10 @@ def getopts():
                    'the directory of the input image)')
     p.add_argument('--save-as', metavar='FILE',
                    help='default save name (for all modes): Save writes to '
-                   'FILE at once, without the file dialog (which is shown '
-                   'only if FILE already exists), and the Open button is '
-                   'hidden. The extension selects the output format in '
+                   'FILE at once, without the file dialog, and the Open '
+                   'button is hidden. If FILE already exists when the '
+                   'first save is made, the file dialog is shown instead '
+                   '(at every save). The extension selects the output format in '
                    'denoise mode. Meant for integration with ART')
     p.add_argument('input_file', nargs='?',
                    help='input image')

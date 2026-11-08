@@ -121,10 +121,12 @@ use `--outdir DIR` to start it in another directory.
 
 ### Integration with ART
 
-`--save-as FILE` (all modes) sets the default save name: the Save button
-writes to `FILE` straight away, without the file dialog (which is only shown
-if `FILE` already exists), and the Open button is hidden. The extension
-selects the output format in denoise mode.
+`--save-as FILE` (all modes) sets the default save name, and hides the Open
+button. If `FILE` does not exist when the first save is made, the Save
+button writes to it straight away, without the file dialog, and so do all
+the following saves (overwriting it). If `FILE` already exists at the first
+save, the file dialog is shown (at every save), starting from `FILE`. The
+extension selects the output format in denoise mode.
 
 An ART user command can thus have SMART save to a temporary file, and
 move it next to the input image (with the sidecar) when SMART exits and the
