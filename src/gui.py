@@ -700,7 +700,21 @@ class MainFrame(wx.Frame):
                 toolbar, choices=["Before / after", "Before", "After"])
             self.choice_view.SetSelection(0)
             toolbar.AddControl(self.choice_view)
-            self.busy_controls = [self.choice_model, self.btn_denoise]
+            self.spin_exposure = self._add_spin(
+                toolbar, "Exposure", 0.0, -6.0, 6.0, 0.25, 2)
+            self.spin_exposure.SetToolTip(
+                "Exposure compensation of the preview, in EV (the saved "
+                "image is not changed)")
+            self._exposure_seq = 0
+            self._exposure_timer = wx.Timer(self)
+            self.Bind(wx.EVT_TIMER, self.on_exposure_timer,
+                      self._exposure_timer)
+            self.spin_exposure.Bind(wx.EVT_SPINCTRLDOUBLE,
+                                    self.on_exposure_changed)
+            self.spin_exposure.Bind(wx.EVT_TEXT_ENTER,
+                                    self.on_exposure_changed)
+            self.busy_controls = [self.choice_model, self.btn_denoise,
+                                  self.spin_exposure]
             self.btn_denoise.Bind(wx.EVT_BUTTON, self.on_denoise)
             self.choice_view.Bind(wx.EVT_CHOICE, self.on_view_changed)
         toolbar.Realize()
@@ -1068,6 +1082,42 @@ class MainFrame(wx.Frame):
     def on_view_changed(self, event):
         self.image_panel.set_view(
             ('split', 'before', 'after')[self.choice_view.GetSelection()])
+
+    def on_exposure_changed(self, event):
+        # wait for the spin button to settle, then render in the background
+        self._exposure_timer.StartOnce(250)
+        event.Skip()
+
+    def on_exposure_timer(self, event):
+        e = self.engine
+        ev = self.spin_exposure.GetValue()
+        if e.raw is None or ev == e.exposure:
+            return
+        self._exposure_seq += 1
+        seq = self._exposure_seq
+        self.statusbar.SetStatusText("Rendering the preview...")
+
+        def work():
+            try:
+                before, after = e.render_previews(ev)
+            except Exception as ex:
+                wx.CallAfter(self.statusbar.SetStatusText,
+                             f"Preview failed: {ex}")
+                return
+            wx.CallAfter(done, before, after)
+
+        def done(before, after):
+            # drop stale results (the spin button moved on, or the image or
+            # the denoised result changed meanwhile)
+            if seq != self._exposure_seq or before is None \
+               or e.raw is None or (e.result is None) != (after is None):
+                return
+            e.set_previews(before, after, ev)
+            panel = self.image_panel
+            panel.set_layers(e.before_display, e.after_display)
+            self.statusbar.SetStatusText(f"Preview exposure {ev:+.2f} EV")
+
+        threading.Thread(target=work, daemon=True).start()
 
     def on_denoise(self, event):
         e = self.engine

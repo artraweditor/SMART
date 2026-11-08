@@ -24,6 +24,8 @@ class DenoiseEngine(BaseEngine):
         self.result = None          # denoise.Result of the last run
         self.before_display = None  # uint8 HxWx3, upright
         self.after_display = None
+        self.before_linear = None   # float32 HxWx3, for the exposure preview
+        self.exposure = 0.0         # preview exposure compensation, EV
         self.busy = False
         self._cancel = threading.Event()
         self._run = None            # cached network, with its options key
@@ -40,8 +42,9 @@ class DenoiseEngine(BaseEngine):
             before = raw.rgb          # already demosaiced
         else:
             before = denoise.bilinear_demosaic(raw.levels, raw.cfa)
+        self.before_linear = before
         self.before_display = denoise.render_display(
-            before, raw, self.to_display)
+            before, raw, self.to_display, gain=self.gain)
         self.raw = raw
         h, w = self.before_display.shape[:2]
         self.size = w, h
@@ -57,9 +60,33 @@ class DenoiseEngine(BaseEngine):
         self.saved = True
         if clear_image:
             self.raw = None
+            self.before_linear = None
             self.before_display = None
             self.displayed_image = None
             self.size = -1, -1
+
+    @property
+    def gain(self):
+        return 2.0 ** self.exposure
+
+    def render_previews(self, exposure):
+        """(before, after) display images for an exposure compensation in EV
+        (after is None if there is no result); callable from any thread."""
+        raw, before, res = self.raw, self.before_linear, self.result
+        if raw is None or before is None:
+            return None, None
+        g = 2.0 ** exposure
+        b = denoise.render_display(before, raw, self.to_display, gain=g)
+        a = None if res is None else denoise.render_display(
+            res.rgb, raw, self.to_display, gain=g)
+        return b, a
+
+    def set_previews(self, before, after, exposure):
+        self.exposure = exposure
+        self.before_display = before
+        self.displayed_image = before
+        if after is not None:
+            self.after_display = after
 
     def undo_last(self):
         self.reset()
@@ -91,7 +118,8 @@ class DenoiseEngine(BaseEngine):
                     self._run = denoise.make_run(opts, raw.kind)
                     self._run_key = key
                 res = denoise.denoise_dng(raw, opts, self._run, check)
-                after = denoise.render_display(res.rgb, raw, self.to_display)
+                after = denoise.render_display(
+                    res.rgb, raw, self.to_display, gain=self.gain)
             except Exception as e:
                 self.busy = False
                 on_error(e)

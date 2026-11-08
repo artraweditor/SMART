@@ -612,11 +612,11 @@ def display_matrix(raw):
     return (np.linalg.inv(a) @ np.diag(raw.gains)).astype(np.float32)
 
 
-def render_display(rgb, raw, to_display, band=256):
+def render_display(rgb, raw, to_display, band=256, gain=1.0):
     """Linear camera RGB (HxWx3) -> uint8 display image, upright: only the
     display transform (colour space, sRGB encoding, display profile), no
-    tone curve or exposure change."""
-    m = display_matrix(raw)
+    tone curve; `gain` is a linear exposure factor (preview only)."""
+    m = display_matrix(raw) * gain
     parts = []
     for y in range(0, rgb.shape[0], band):
         lin = colorspace.apply_matrix(m, rgb[y:y + band])
