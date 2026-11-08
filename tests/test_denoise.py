@@ -92,6 +92,20 @@ def test_active_area_is_cropped_and_shifts_the_pattern(tmp_path):
     assert r.cfa.tolist() == [[2, 1], [1, 0]]
 
 
+def test_original_levels_trust_the_white_level(tmp_path):
+    # ART's chromatic aberration correction can overshoot above white at a
+    # few samples: they must not rescale the image
+    d = np.full((8, 10), 2000, np.uint16)
+    d[3, 4] = 6000                          # above white (4095)
+    p = write_cfa(tmp_path / 'a.dng', d, white=4095, extra=[
+        (50713, 'H', 2, (2, 2)), (50714, 'H', 4, (500, 500, 500, 500))])
+    r = dng.read_mosaic_dng(p)
+    assert r.white == 4095
+    assert r.levels[0, 0] == pytest.approx((2000 - 500) / (4095 - 500))
+    assert r.levels[3, 4] == pytest.approx((6000 - 500) / (4095 - 500))
+    assert r.levels.max() > 1
+
+
 def test_stale_white_level_is_raised_to_the_data(tmp_path):
     d = np.full((8, 8), 5000, np.uint16)
     r = dng.read_mosaic_dng(write_cfa(tmp_path / 'a.dng', d, white=1023))

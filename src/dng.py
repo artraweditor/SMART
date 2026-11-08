@@ -9,7 +9,9 @@ supported: convert them first with ART-cli.
 The levels are normalised as in the DNG specification: BlackLevel (with its
 repeat pattern, and the per-row and per-column deltas) is subtracted and the
 result is divided by WhiteLevel minus the black level (no BlackLevel means
-black 0).  WhiteLevel is raised to the data maximum if the data exceed it.
+black 0).  If there is no BlackLevel (normalised levels), WhiteLevel is raised
+to the data maximum if the data exceed it; with one (the levels of the raw
+file) it is trusted, and a few samples above it stay above 1.
 For mosaics, the ActiveArea, if there is one, is cropped.  Values below black
 are set to 0.
 
@@ -172,7 +174,16 @@ def _white(data, page):
     else:
         nominal = float(np.atleast_1d(wl)[0]) if wl is not None \
             else float(np.iinfo(data.dtype).max)
-    white = max(nominal, float(data.max()))
+    if data.dtype.kind != 'f' and wl is not None and 'BlackLevel' in page.tags:
+        # the black and white levels of the raw file (ART-cli
+        # --dng-levels=original): the tags are the truth.  A few samples
+        # above white (the overshoot of ART's chromatic aberration
+        # correction around clipped highlights, up to 1.6 times white) must
+        # not rescale the whole image: they stay above 1.
+        white = nominal
+    else:
+        # otherwise the white level may be stale: raise it to the data
+        white = max(nominal, float(data.max()))
     if white <= 0:
         raise DNGError('empty image')
     return white
