@@ -1,4 +1,4 @@
-name: Build (macOS Apple Silicon)
+name: Build (macOS Apple Silicon, Intel)
 
 on:
   push:
@@ -18,11 +18,24 @@ permissions:
 env:
   PYTHON_VERSION: ${{ inputs.python_version || '3.12' }}
   PBS_TAG: ${{ inputs.pbs_tag || '' }}
-  PBS_TRIPLE: aarch64-apple-darwin
 
 jobs:
   build:
-    runs-on: macos-15   # Apple Silicon
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    env:
+      PBS_TRIPLE: ${{ matrix.triple }}
+      ARCH: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15          # Apple Silicon
+            triple: aarch64-apple-darwin
+          - arch: x64
+            runner: macos-15-intel    # Intel
+            triple: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -126,14 +139,14 @@ jobs:
         id: pkg
         run: |
           VERSION=$("$PY" -c "import re;print(re.search(r\"version = '([^']+)'\", open('src/config.py').read()).group(1))")
-          NAME="SMART-${VERSION}-macos-arm64.zip"
+          NAME="SMART-${VERSION}-macos-${ARCH}.zip"
           # ditto keeps symlinks and extended attributes, which a .app needs
           ditto -c -k --keepParent dist/SMART.app "${NAME}"
           echo "file=${NAME}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SMART-macos-arm64
+          name: SMART-macos-${{ matrix.arch }}
           path: ${{ steps.pkg.outputs.file }}
 
       - name: Attach to release
