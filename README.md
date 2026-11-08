@@ -3,11 +3,12 @@
 # SMART
 
 SMART is a simple GUI front-end to AI models, tailored to the
-[ART](https://artraweditor.github.io/) raw image processor. It has two
+[ART](https://artraweditor.github.io/) raw image processor. It has three
 modes:
 
 - **AI masking** (the default): builds subject masks for an image using
   Segment Anything 2, to be used with ART.
+
 - **AI healing**: removes unwanted elements by painting over them and
   filling the area with the LaMa inpainting model ("generative fill"),
   working on linear float32 TIFF files exported from ART without
