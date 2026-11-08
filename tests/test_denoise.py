@@ -41,6 +41,57 @@ def test_read_u16(tmp_path):
     np.testing.assert_allclose(r.gains, [2, 1, 1 / 0.7], atol=1e-5)
 
 
+def test_black_and_white_levels(tmp_path):
+    rng = np.random.default_rng(0)
+    d = rng.integers(500, 4000, (8, 10)).astype(np.uint16)
+    black = (512, 520, 530, 540)          # RGGB pattern: R, G1, G2, B
+    p = write_cfa(tmp_path / 'a.dng', d, white=4095, extra=[
+        (50713, 'H', 2, (2, 2)), (50714, 'H', 4, black)])
+    r = dng.read_mosaic_dng(p)
+    exp = np.zeros(d.shape, np.float32)
+    for i in range(2):
+        for j in range(2):
+            b = black[2 * i + j]
+            exp[i::2, j::2] = np.maximum(d[i::2, j::2].astype(np.float32) - b,
+                                         0) / (max(4095, d.max()) - b)
+    np.testing.assert_allclose(r.levels, exp, rtol=1e-5, atol=1e-7)
+    assert r.black == pytest.approx(np.mean(black))
+    assert (r.levels >= 0).all()
+
+
+def test_black_level_single_value_and_below_black(tmp_path):
+    d = np.full((8, 8), 600, np.uint16)
+    d[0, 0] = 100                           # below black: clipped to 0
+    p = write_cfa(tmp_path / 'a.dng', d, white=4095, extra=[
+        (50714, 'H', 1, 512)])
+    r = dng.read_mosaic_dng(p)
+    assert r.levels[0, 0] == 0
+    assert r.levels[1, 1] == pytest.approx((600 - 512) / (4095 - 512))
+
+
+def test_black_level_deltas(tmp_path):
+    d = np.full((8, 8), 1000, np.uint16)
+    p = write_cfa(tmp_path / 'a.dng', d, white=4095, extra=[
+        (50714, 'H', 1, 500),
+        (50715, 10, 8, [v for k in range(8) for v in (10 * k, 1)])])
+    r = dng.read_mosaic_dng(p)
+    for k in range(8):
+        assert r.levels[3, k] == pytest.approx((1000 - 500 - 10 * k)
+                                               / (4095 - 500))
+
+
+def test_active_area_is_cropped_and_shifts_the_pattern(tmp_path):
+    d = np.arange(12 * 14, dtype=np.uint16).reshape(12, 14) + 100
+    p = write_cfa(tmp_path / 'a.dng', d, white=4095, extra=[
+        (50829, 'I', 4, (1, 3, 11, 13))])     # top, left, bottom, right
+    r = dng.read_mosaic_dng(p)
+    assert r.levels.shape == (10, 10)
+    np.testing.assert_allclose(r.levels, d[1:11, 3:13] / max(4095, d.max()),
+                               rtol=1e-6)
+    # RGGB read from (1, 3) is GBRG-shifted: (y odd, x odd) -> B at (0, 0)
+    assert r.cfa.tolist() == [[2, 1], [1, 0]]
+
+
 def test_stale_white_level_is_raised_to_the_data(tmp_path):
     d = np.full((8, 8), 5000, np.uint16)
     r = dng.read_mosaic_dng(write_cfa(tmp_path / 'a.dng', d, white=1023))

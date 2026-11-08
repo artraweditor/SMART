@@ -157,9 +157,11 @@ a linear image with three samples per pixel. The model choices (`fast`,
 `balanced`, `best`) are the same for both: the greycard denoiser (which
 demosaics and denoises at once) is used for mosaics, and TreeNet for linear
 files. The DNG reader is
-built on tifffile and nothing else (no rawpy/LibRaw). ART writes
-no black level (it is 0) and the data are already cropped to the active
-area, so `BlackLevel` and `ActiveArea` tags are ignored.
+built on tifffile and nothing else (no rawpy/LibRaw). The black level
+(`BlackLevel`, with its repeat pattern and the per-row and per-column deltas)
+is subtracted and the result is divided by `WhiteLevel` minus black, as in the
+DNG specification (no `BlackLevel` means 0); values below black are set to 0.
+The `ActiveArea` of a mosaic, if any, is cropped.
 
 Start SMART with `SMART --mode denoise [file.dng]`, choose the model in the
 toolbar and press *Denoise* (or *Cmd/Ctrl+Enter*). The *View* selector
