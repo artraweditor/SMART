@@ -649,9 +649,18 @@ class MainFrame(wx.Frame):
         vbox = wx.BoxSizer(wx.VERTICAL)
 
         # Menu Bar
+        menubar = wx.MenuBar()
         if wx.Platform == '__WXMAC__':
-            menubar = wx.MenuBar()
-            self.SetMenuBar(menubar)
+            # moved to the application menu (Cmd+,) by wx
+            menu = wx.Menu()
+            menu.Append(wx.ID_PREFERENCES, "Preferences...\tCtrl+,")
+            menubar.Append(menu, "&Edit")
+        else:
+            menu = wx.Menu()
+            menu.Append(wx.ID_PREFERENCES, "&Preferences...\tCtrl+,")
+            menubar.Append(menu, "&Edit")
+        self.SetMenuBar(menubar)
+        self.Bind(wx.EVT_MENU, self.on_preferences, id=wx.ID_PREFERENCES)
 
         # Toolbar
         toolbar = self.CreateToolBar()
@@ -1452,6 +1461,64 @@ class MainFrame(wx.Frame):
         wx.MessageDialog(self, f"Denoising failed:\n{ex}", "Denoising error",
                          wx.OK | wx.ICON_ERROR).ShowModal()
 
+    def on_preferences(self, event):
+        import dataclasses
+        import prefs
+        conf = self.engine.conf
+        dlg = prefs.PreferencesDialog(self, conf, self.mode)
+        if dlg.ShowModal() != wx.ID_OK:
+            dlg.Destroy()
+            return
+        changed = dlg.apply(conf)
+        dlg.Destroy()
+        e = self.engine
+        live = {'exiftool', 'last_dir', 'heal_seam_match', 'heal_even',
+                'heal_regrain', 'mask_color', 'brush_color',
+                'background_color', 'upscale_compare'}
+        # values that on_close would otherwise overwrite from the session
+        if self.mode == 'heal':
+            e.radius, e.feather, e.opacity = (
+                conf.brush_radius, conf.brush_feather, conf.brush_opacity)
+            self.spin_radius.SetValue(e.radius)
+            self.spin_feather.SetValue(e.feather)
+            self.spin_opacity.SetValue(e.opacity)
+            self.image_panel.refresh_brush()
+            live |= {'brush_radius', 'brush_feather', 'brush_opacity'}
+            if {'heal_providers', 'heal_max_tile'} & changed:
+                e.filler = None
+                live |= {'heal_providers', 'heal_max_tile'}
+        elif self.mode == 'denoise':
+            if conf.denoise_model in config.DENOISE_MODELS:
+                self.choice_model.SetStringSelection(conf.denoise_model)
+            opts = {k: getattr(conf, 'denoise_' + k) for k in
+                    ('tile', 'margin', 'provider', 'dng_bits')
+                    if hasattr(e.options, k)}
+            if hasattr(e.options, 'model'):
+                opts['model'] = conf.denoise_model
+            e.options = dataclasses.replace(e.options, **opts)
+            live |= {n for n in changed if n.startswith('denoise_')}
+        elif self.mode == 'upscale':
+            if conf.upscale_scale != e.options.scale \
+               and conf.upscale_scale in config.UPSCALE_MODELS:
+                e.set_scale(conf.upscale_scale)
+                self.choice_scale.SetSelection(
+                    list(config.UPSCALE_MODELS).index(conf.upscale_scale))
+            opts = {k: getattr(conf, 'upscale_' + k) for k in
+                    ('tile', 'margin', 'provider', 'dng_bits')
+                    if hasattr(e.options, k)}
+            e.options = dataclasses.replace(e.options, **opts)
+            self.choice_method.SetSelection(
+                0 if conf.upscale_compare == 'nearest' else 1)
+            self.image_panel.set_method(conf.upscale_compare)
+            live |= {n for n in changed if n.startswith('upscale_')}
+        self.image_panel.SetBackgroundColour(wx.Colour(*conf.background_color))
+        self.image_panel.Refresh()
+        if changed - live:
+            self.statusbar.SetStatusText(
+                "Preferences saved; some changes apply after a restart")
+        else:
+            self.statusbar.SetStatusText("Preferences saved")
+
     def on_close(self, event):
         if self.engine.busy_now():
             return
@@ -1654,8 +1721,47 @@ def ask_mode():
         dlg.Destroy()
 
 
+def set_mac_app_name(name='SMART'):
+    """When run as a script on macOS the application menu is titled after
+    the interpreter ("Python"): override the bundle name."""
+    if wx.Platform != '__WXMAC__':
+        return
+    try:
+        import ctypes
+        import ctypes.util
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+        ctypes.cdll.LoadLibrary(ctypes.util.find_library('Foundation'))
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.sel_registerName.restype = ctypes.c_void_p
+        send = objc.objc_msgSend
+        send.restype = ctypes.c_void_p
+        send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+        def msg(obj, sel, *args):
+            send.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + \
+                [ctypes.c_void_p] * len(args)
+            return send(obj, objc.sel_registerName(sel.encode()), *args)
+
+        def nsstr(s):
+            send.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                             ctypes.c_char_p]
+            return send(objc.objc_getClass(b'NSString'),
+                        objc.sel_registerName(b'stringWithUTF8String:'),
+                        s.encode())
+
+        bundle = msg(objc.objc_getClass(b'NSBundle'), 'mainBundle')
+        info = msg(bundle, 'infoDictionary')
+        if info:
+            for key in ('CFBundleName', 'CFBundleDisplayName'):
+                msg(info, 'setObject:forKey:', nsstr(name), nsstr(key))
+    except Exception:
+        pass
+
+
 def main(conf, filename=None, mode=None, outdir=None, opts=None):
+    set_mac_app_name()
     app = wx.PyApp() if wx.Platform == '__WXMAC__' else wx.App()
+    app.SetAppName('SMART')
     set_dock_icon()
     fn = config.Config.get_config_file()
     if not os.path.exists(fn):
