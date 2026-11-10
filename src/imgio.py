@@ -223,12 +223,20 @@ def save(img, path):
         arr = np.clip(np.rint(data * 65535.0), 0, 65535).astype(np.uint16)
         if img.gray:
             arr = arr[..., 0]
+        if img.alpha is not None:
+            arr = np.concatenate(
+                [arr if arr.ndim == 3 else arr[..., None],
+                 img.alpha[..., None].astype(np.uint16)], axis=2)
         with open(path, 'wb') as f:
             f.write(imagecodecs.png_encode(arr))
         return
     arr = np.clip(np.rint(data * 255.0), 0, 255).astype(np.uint8)
     if img.gray:
         arr = arr[..., 0]
+    if img.alpha is not None and ext == '.png':
+        arr = np.concatenate(
+            [arr if arr.ndim == 3 else arr[..., None],
+             img.alpha[..., None].astype(np.uint8)], axis=2)
     pil = Image.fromarray(arr)
     kw = {}
     if img.icc:

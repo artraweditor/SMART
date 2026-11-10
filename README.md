@@ -3,7 +3,7 @@
 # SMART
 
 SMART is a simple GUI front-end to AI models, tailored to the
-[ART](https://artraweditor.github.io/) raw image processor. It has three
+[ART](https://artraweditor.github.io/) raw image processor. It has four
 modes:
 
 - **AI masking** (the default): builds subject masks for an image using
@@ -18,8 +18,13 @@ modes:
   (demosaiced) raw DNG with a learned denoiser, with a before/after
   preview, either from the GUI or from the command line.
 
+- **AI upscaling**: enlarges an image (TIFF, PNG, JPEG) or a linear DNG
+  2x or 4x with Real-ESRGAN, saving the result in the same format as the
+  input, with a before/after preview that compares it with a naive
+  (nearest-neighbour or Lanczos) enlargement; also from the command line.
+
 The mode is selected with the `--mode` command-line switch: `--mode mask`,
-`--mode heal` or `--mode denoise`. If the switch is not given, the GUI asks
+`--mode heal`, `--mode denoise` or `--mode upscale`. If the switch is not given, the GUI asks
 which mode to use when it starts.
 
 ## Prerequisites
@@ -28,7 +33,7 @@ SMART needs Python 3 and the following packages:
 
 - [wxPython](https://wxpython.org)
 - [onnxruntime](https://onnxruntime.ai/), which runs the neural networks of
-  all three modes
+  all the modes
 - [Pillow](https://pillow.readthedocs.io/)
 - [platformdirs](https://pypi.org/project/platformdirs/)
 - [NumPy](https://numpy.org/), [SciPy](https://scipy.org/),
@@ -61,10 +66,10 @@ repackaged in [rawlab-models](https://huggingface.co/AyedaOk/rawlab-models).
 Run `SMART --init-config` from a terminal to create an initial
 configuration file. The path to the file will be printed in output. Edit
 the file with a text editor, and adapt the parameters to your setup. The
-`mask_provider`, `heal_providers` and `denoise_provider` parameters select
-the onnxruntime execution providers used by the three modes (e.g.
+`mask_provider`, `heal_providers`, `denoise_provider` and `upscale_provider`
+parameters select the onnxruntime execution providers used by the modes (e.g.
 `"cuda"`, `"coreml"`, `"directml"`); the default is the CPU for masking and
-healing, and the best available one for denoising.
+healing, and the best available one for denoising and upscaling.
 
 Then download the model(s) for the mode(s) you want to use. They are put
 in the `models/` directory. (In the GUI, if the model of the selected mode
@@ -114,6 +119,19 @@ The `denoise_*` parameters of the configuration file set the default model,
 onnxruntime provider (`auto`), tile size and margin (for mosaiced DNGs), and
 DNG output depth.
 
+### AI upscaling
+
+Download the upscaling models with `SMART --download-upscale-model`
+(the configured factor, 2 by default), `SMART --download-upscale-model 4`,
+or `SMART --download-upscale-model all`. Each model is 67 MB. In the GUI,
+a missing model is offered for download when needed. The networks are the
+Real-ESRGAN `x2plus` and `x4plus` models (BSD-3-Clause), exported to ONNX by
+[SceneWorks](https://huggingface.co/SceneWorks/real-esrgan-onnx).
+
+The `upscale_*` parameters of the configuration file set the default factor,
+onnxruntime provider (`auto`), tile size and margin, DNG output depth, and the
+GUI's naive enlargement method (`nearest` or `lanczos`).
+
 ## Usage
 
 By default the save dialog starts in the directory of the input image;
@@ -126,7 +144,8 @@ button. If `FILE` does not exist when the first save is made, the Save
 button writes to it straight away, without the file dialog, and so do all
 the following saves (overwriting it). If `FILE` already exists at the first
 save, the file dialog is shown (at every save), starting from `FILE`. The
-extension selects the output format in denoise mode.
+extension selects the output format in denoise mode (in upscale mode it
+should be the one of the input).
 
 An ART user command can thus have SMART save to a temporary file, and
 move it next to the input image (with the sidecar) when SMART exits and the
@@ -210,3 +229,40 @@ The default output is `photo-denoised.tif`. Other options:
 - `-v`, and `--progress` (integer percentages on stdout)
 
 Options not given default to the configuration file.
+
+### AI upscaling
+
+**Input.** A TIFF (8-bit, 16-bit or float), PNG or JPEG image, or a linear
+(demosaiced) DNG made with `ART-cli --raw-preprocess=demosaic` (the same
+kind of DNG that denoising accepts; mosaiced DNGs must be demosaiced first).
+
+**GUI.** Start SMART with `SMART --mode upscale [file]`, choose the scale
+(2x or 4x) and press *Upscale* (or *Cmd/Ctrl+Enter*). The before/after split
+view (drag the divider) compares the result with the input enlarged to the
+same size by a naive method, selectable with *Compare with*: nearest neighbour
+or Lanczos. The *View* selector shows either image alone, and the *Exposure*
+control changes the preview of linear DNGs only. Changing the scale
+discards the result. Large outputs need a lot of memory: SMART asks for
+confirmation above 100 megapixels.
+
+**Output.** The result is saved in the same format as the input (the default
+name is `photo_upscaled.EXT`): the bit depth, ICC profile, alpha channel
+and TIFF compression are kept, and the TIFF resolution is scaled. TIFFs with
+float samples are taken as linear light. A linear DNG is saved as a linear
+DNG (16-bit or 32-bit float, `--dng-bits`) with the same camera matrix,
+as-shot neutral, orientation, lens opcodes and metadata (if exiftool is
+available). The network sees the white balanced, sRGB-encoded image, as it
+was trained on; the white balance and the encoding are undone on the result,
+which is thus in camera RGB like the input. Clipped samples of DNGs are kept
+as they are.
+
+**Command line.**
+
+    SMART --mode upscale --cli photo.jpg
+    SMART --mode upscale --cli photo.tif --scale 4 -o big.tif
+    SMART --mode upscale --cli linear.dng --scale 2 --dng-bits 32
+    SMART --mode upscale --cli photo.png --provider cpu
+
+The default output is `photo-upscaled.jpg`. Other options: `--model-file`,
+`--provider`, `--tile` and `--margin` (default 512 and 16), `-v`, and
+`--progress`. Options not given default to the configuration file.

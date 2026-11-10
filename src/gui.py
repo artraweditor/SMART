@@ -8,8 +8,10 @@ from PIL import Image
 
 import config
 import denoise
+import upscale
 
 CACHE_BELOW = 0.5   # below this zoom a scaled copy of the image is cached
+BIG_OUTPUT_MP = 100  # upscaling: ask before producing more megapixels
 
 
 class ImagePanel(wx.Panel):
@@ -543,6 +545,69 @@ class ComparePanel(ImagePanel):
 # end of class ComparePanel
 
 
+class UpscaleComparePanel(ComparePanel):
+    """Before/after viewer for upscaling.  Both layers are shown at the size
+    of the upscaled image (the engine's size): "after" is the result, and
+    "before" is the input, enlarged on the fly (only the visible part) with a
+    naive method, nearest neighbour or Lanczos."""
+    METHODS = {'nearest': Image.NEAREST, 'lanczos': Image.LANCZOS}
+
+    def __init__(self, parent, engine):
+        super().__init__(parent, engine)
+        self.method = 'nearest'
+
+    def img_size(self):
+        if self.image is None:
+            return 0, 0
+        return self.engine.get_size()
+
+    def set_method(self, method):
+        self.method = method
+        layer = self.layers.get('before')
+        if layer is not None:
+            layer.cache = layer.key = None
+        self.Refresh()
+
+    def refit(self):
+        """The output size changed (another scale): show the layers again."""
+        self.set_layers(self.engine.displayed_image)
+        self.center_image()
+        self.zoom_fit()
+
+    def _render_layer(self, name, rx, ry, rw, rh):
+        if rw <= 0 or rh <= 0:
+            return None
+        layer = self.layers[name]
+        ox, oy = int(self.offset_x), int(self.offset_y)
+        dw, dh = self._dest_size()
+        x0, y0 = max(rx, ox), max(ry, oy)
+        x1, y1 = min(rx + rw, ox + dw), min(ry + rh, oy + dh)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        lw, lh = layer.pil.size
+        rel = dw / lw       # the scale of this layer on the screen
+        if rel < CACHE_BELOW:
+            if layer.cache is None or layer.key != (dw, dh):
+                layer.cache = np.asarray(
+                    layer.pil.resize((dw, dh), Image.BOX)).copy()
+                layer.key = (dw, dh)
+            part = layer.cache[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+        else:
+            fx, fy = lw / dw, lh / dh
+            box = ((x0 - ox) * fx, (y0 - oy) * fy,
+                   (x1 - ox) * fx, (y1 - oy) * fy)
+            if name == 'before':
+                method = self.METHODS[self.method] if rel > 1 \
+                    else Image.BILINEAR
+            else:
+                method = Image.NEAREST if rel >= 2 else Image.BILINEAR
+            part = np.asarray(layer.pil.resize((x1 - x0, y1 - y0), method,
+                                               box=box))
+        return x0, y0, x1 - x0, y1 - y0, np.ascontiguousarray(part)
+
+# end of class UpscaleComparePanel
+
+
 class MainFrame(wx.Frame):
     def __init__(self, conf, engine, mode='mask', outdir=None,
                  save_as=None):
@@ -551,7 +616,8 @@ class MainFrame(wx.Frame):
         self._save_as_direct = None  # see save_mask
         self.outdir = outdir    # default directory of the save dialog
         title = {'mask': "SMART AI mask builder", 'heal': "SMART AI healing",
-                 'denoise': "SMART raw denoising"}[mode]
+                 'denoise': "SMART raw denoising",
+                 'upscale': "SMART AI upscaling"}[mode]
         super().__init__(None, title=title + " - v" + config.version,
                          size=conf.window_size)
 
@@ -567,10 +633,10 @@ class MainFrame(wx.Frame):
         if mode == 'mask':
             msg = "shift+left click: add positive point; " \
                 "shift+right click: add negative point   "
-        elif mode == 'denoise':
+        elif mode in ('denoise', 'upscale'):
             key = "Cmd" if wx.Platform == '__WXMAC__' else "Ctrl"
             msg = "drag: pan; drag the divider: compare; wheel: zoom; " \
-                f"{key}+Enter: denoise   "
+                f"{key}+Enter: {'denoise' if mode == 'denoise' else 'upscale'}   "
         else:
             key = "Cmd" if wx.Platform == '__WXMAC__' else "Ctrl"
             msg = "shift+left drag: paint; shift+right drag: erase; " \
@@ -648,8 +714,9 @@ class MainFrame(wx.Frame):
         tb_reset = add_tool(wx.ID_ANY, "Reset", 'undo-all.svg',
             shortHelp={'mask': "Remove all points",
                        'heal': "Revert to the image as loaded",
-                       'denoise': "Discard the denoised image"}[mode])
-        if mode == 'denoise':
+                       'denoise': "Discard the denoised image",
+                       'upscale': "Discard the upscaled image"}[mode])
+        if mode in ('denoise', 'upscale'):
             tb_undo = tb_reset
         else:
             tb_undo = add_tool(wx.ID_ANY, "Undo", 'undo.svg',
@@ -717,6 +784,8 @@ class MainFrame(wx.Frame):
                                   self.spin_exposure]
             self.btn_denoise.Bind(wx.EVT_BUTTON, self.on_denoise)
             self.choice_view.Bind(wx.EVT_CHOICE, self.on_view_changed)
+        if mode == 'upscale':
+            self._build_upscale_toolbar(toolbar, engine, heal_key)
         toolbar.Realize()
 
         accel_entries = [
@@ -739,14 +808,15 @@ class MainFrame(wx.Frame):
                 wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER,
                                     self.id_heal),
             ]
-        if mode == 'denoise':
+        if mode in ('denoise', 'upscale'):
             accel_entries += [
                 wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_RETURN,
                                     self.id_denoise),
                 wx.AcceleratorEntry(wx.ACCEL_CTRL, wx.WXK_NUMPAD_ENTER,
                                     self.id_denoise),
             ]
-            self.Bind(wx.EVT_MENU, self.on_denoise, id=self.id_denoise)
+            self.Bind(wx.EVT_MENU, self.on_denoise if mode == 'denoise'
+                      else self.on_upscale, id=self.id_denoise)
         accel_table = wx.AcceleratorTable(accel_entries)
         self.SetAcceleratorTable(accel_table)
 
@@ -755,7 +825,7 @@ class MainFrame(wx.Frame):
             self.Bind(wx.EVT_TOOL, self.on_open_image, tb_open)
         self.Bind(wx.EVT_MENU, self.on_save, tb_save)
         self.Bind(wx.EVT_MENU, self.on_reset, tb_reset)
-        if mode != 'denoise':
+        if mode not in ('denoise', 'upscale'):
             self.Bind(wx.EVT_MENU, self.on_undo, tb_undo)
         self.Bind(wx.EVT_MENU, self.panel_zoom_in, tb_zoom_in)
         self.Bind(wx.EVT_MENU, self.panel_zoom_out, tb_zoom_out)
@@ -768,7 +838,7 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_TOOL, self.panel_zoom_fit, tb_zoom_fit)
         self.Bind(wx.EVT_TOOL, self.on_save, tb_save)
         self.Bind(wx.EVT_TOOL, self.on_reset, tb_reset)
-        if mode != 'denoise':
+        if mode not in ('denoise', 'upscale'):
             self.Bind(wx.EVT_TOOL, self.on_undo, tb_undo)
         if mode == 'heal':
             self.Bind(wx.EVT_MENU, self.on_heal, id=self.id_heal)
@@ -777,13 +847,155 @@ class MainFrame(wx.Frame):
         self.Bind(wx.EVT_CLOSE, self.on_close)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
-        self.image_panel = ComparePanel(self, engine) if mode == 'denoise' \
-            else ImagePanel(self, engine, mode)
+        if mode == 'denoise':
+            self.image_panel = ComparePanel(self, engine)
+        elif mode == 'upscale':
+            self.image_panel = UpscaleComparePanel(self, engine)
+            self.image_panel.method = self._compare_method()
+        else:
+            self.image_panel = ImagePanel(self, engine, mode)
         hbox.Add(self.image_panel, proportion=1, flag=wx.EXPAND)
 
         vbox.Add(hbox, proportion=1, flag=wx.EXPAND)
         self.SetSizer(vbox)
         self.Raise()
+
+    # ------------------------------------------------------------ upscaling UI
+    def _compare_method(self):
+        m = self.engine.conf.upscale_compare
+        return m if m in UpscaleComparePanel.METHODS else 'nearest'
+
+    def _build_upscale_toolbar(self, toolbar, engine, key):
+        toolbar.AddSeparator()
+        toolbar.AddControl(wx.StaticText(toolbar, label=" Scale "))
+        scales = [str(k) for k in config.UPSCALE_MODELS]
+        self.choice_scale = wx.Choice(toolbar,
+                                      choices=[f"{k}x" for k in scales])
+        if str(engine.options.scale) in scales:
+            self.choice_scale.SetSelection(
+                scales.index(str(engine.options.scale)))
+        else:
+            self.choice_scale.SetSelection(0)
+        toolbar.AddControl(self.choice_scale)
+        self.btn_denoise = wx.Button(toolbar, label="Upscale")
+        self.btn_denoise.SetToolTip(f"Upscale the image ({key})")
+        toolbar.AddControl(self.btn_denoise)
+        toolbar.AddSeparator()
+        toolbar.AddControl(wx.StaticText(toolbar, label=" View "))
+        self.choice_view = wx.Choice(
+            toolbar, choices=["Before / after", "Before", "After"])
+        self.choice_view.SetSelection(0)
+        toolbar.AddControl(self.choice_view)
+        toolbar.AddControl(wx.StaticText(toolbar, label=" Compare with "))
+        self.choice_method = wx.Choice(
+            toolbar, choices=["Nearest neighbour", "Lanczos"])
+        self.choice_method.SetSelection(
+            0 if self._compare_method() == 'nearest' else 1)
+        self.choice_method.SetToolTip(
+            "How the input is enlarged in the \"before\" view")
+        toolbar.AddControl(self.choice_method)
+        self.spin_exposure = self._add_spin(
+            toolbar, "Exposure", 0.0, -6.0, 6.0, 0.25, 2)
+        self.spin_exposure.SetToolTip(
+            "Exposure compensation of the preview of linear DNGs, in EV "
+            "(the saved image is not changed)")
+        self._exposure_seq = 0
+        self._exposure_timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.on_exposure_timer, self._exposure_timer)
+        self.spin_exposure.Bind(wx.EVT_SPINCTRLDOUBLE,
+                                self.on_exposure_changed)
+        self.spin_exposure.Bind(wx.EVT_TEXT_ENTER, self.on_exposure_changed)
+        self.busy_controls = [self.choice_scale, self.btn_denoise,
+                              self.spin_exposure]
+        self.btn_denoise.Bind(wx.EVT_BUTTON, self.on_upscale)
+        self.choice_view.Bind(wx.EVT_CHOICE, self.on_view_changed)
+        self.choice_method.Bind(wx.EVT_CHOICE, self.on_method_changed)
+        self.choice_scale.Bind(wx.EVT_CHOICE, self.on_scale_changed)
+
+    def _selected_scale(self):
+        return list(config.UPSCALE_MODELS)[self.choice_scale.GetSelection()]
+
+    def on_method_changed(self, event):
+        m = ('nearest', 'lanczos')[self.choice_method.GetSelection()]
+        self.engine.conf.upscale_compare = m
+        self.image_panel.set_method(m)
+
+    def on_scale_changed(self, event):
+        e = self.engine
+        scale = self._selected_scale()
+        if scale == e.scale or e.busy_now():
+            return
+        if e.result is not None and not self.check_save():
+            self.choice_scale.SetSelection(
+                list(config.UPSCALE_MODELS).index(e.scale))
+            return
+        e.set_scale(scale)
+        self.image_panel.refit()
+        self.statusbar.SetStatusText(f"Scale: {scale}x")
+
+    def on_upscale(self, event):
+        e = self.engine
+        if e.src is None:
+            self.statusbar.SetStatusText("Open an image first")
+            return
+        if e.busy_now():
+            return
+        if not self._ensure_upscale_model(e.scale):
+            return
+        mp = e.output_megapixels()
+        if mp > BIG_OUTPUT_MP:
+            with wx.MessageDialog(
+                    self, f"The upscaled image will have {mp:.0f} "
+                    "megapixels, and will need a lot of memory. "
+                    "Continue?", "Large image",
+                    wx.YES_NO | wx.NO_DEFAULT | wx.ICON_QUESTION) as dlg:
+                if dlg.ShowModal() != wx.ID_YES:
+                    return
+        self._set_busy(True)
+        self.statusbar.SetStatusText("Upscaling...")
+        out = self._run_with_progress(
+            "Upscaling", lambda done, err, prog:
+            e.upscale_async(done, err, prog))
+        if out is None:
+            self._set_busy(False)
+            return
+        kind, args = out
+        if kind == 'done':
+            self._upscale_done(*args)
+        elif isinstance(args[0], upscale.Cancelled):
+            self._set_busy(False)
+            self.statusbar.SetStatusText("Upscaling cancelled")
+        else:
+            self._upscale_failed(args[0])
+
+    def _ensure_upscale_model(self, scale):
+        e = self.engine
+        if e.options.model_file:
+            return True
+        name, url, size, sha = config.UPSCALE_MODELS[scale]
+        ok = ensure_model_file(self, f"The {scale}x upscaling model", name,
+                               e.conf.get_upscale_model_file(scale), url,
+                               size, sha)
+        if ok is None:
+            self.statusbar.SetStatusText("Upscaling cancelled: no model")
+        elif not ok:
+            self.statusbar.SetStatusText("Model download failed")
+        return bool(ok)
+
+    def _upscale_done(self, res, after):
+        self.engine.apply_result(res, after)
+        self._set_busy(False)
+        self.image_panel.show_result()
+        self.statusbar.SetStatusText(
+            f"Upscaling done ({res.model} on {res.provider})")
+
+    def _upscale_failed(self, ex):
+        import traceback
+        traceback.print_exception(ex)
+        self._set_busy(False)
+        self.statusbar.SetStatusText("Upscaling failed")
+        wx.MessageDialog(self, f"Upscaling failed:\n{ex}", "Upscaling error",
+                         wx.OK | wx.ICON_ERROR).ShowModal()
 
     # ------------------------------------------------------------ brush UI
     def _add_spin(self, toolbar, label, value, lo, hi, inc, digits):
@@ -853,6 +1065,9 @@ class MainFrame(wx.Frame):
             return
         if self.mode == 'denoise':
             wildcard = "DNG files (*.dng)|*.dng;*.DNG"
+        elif self.mode == 'upscale':
+            wildcard = "Image files (*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.dng)" \
+                "|*.png;*.jpg;*.jpeg;*.tif;*.tiff;*.dng"
         else:
             wildcard = "Image files (*.png;*.jpg;*.jpeg;*.tif;*.tiff)" \
                 "|*.png;*.jpg;*.jpeg;*.tif;*.tiff"
@@ -897,9 +1112,12 @@ class MainFrame(wx.Frame):
                 "No mask to save" if self.mode == 'mask'
                 else "No image to save")
             return True
-        if self.mode == 'denoise' and self.engine.result is None:
+        if self.mode in ('denoise', 'upscale') and \
+           self.engine.result is None:
             self.statusbar.SetStatusText(
-                "Nothing to save: denoise the image first")
+                "Nothing to save: "
+                f"{'denoise' if self.mode == 'denoise' else 'upscale'} "
+                "the image first")
             return True
         if self.save_as is not None:
             # decided at the first save: if the file does not exist yet, it
@@ -919,6 +1137,18 @@ class MainFrame(wx.Frame):
             else:
                 df = str(self.filename.stem + "_denoised.tif")
                 wildcard = tiff + "|" + dngw
+        elif self.mode == 'upscale':
+            title = "Save Upscaled Image"
+            ext = self.filename.suffix or '.tif'
+            df = str(self.filename.stem + "_upscaled" + ext)
+            e = ext.lower().lstrip('.')
+            kinds = {'tif': 'TIFF files (*.tif;*.tiff)|*.tif;*.tiff',
+                     'tiff': 'TIFF files (*.tif;*.tiff)|*.tif;*.tiff',
+                     'png': 'PNG files (*.png)|*.png',
+                     'jpg': 'JPEG files (*.jpg;*.jpeg)|*.jpg;*.jpeg',
+                     'jpeg': 'JPEG files (*.jpg;*.jpeg)|*.jpg;*.jpeg',
+                     'dng': 'Linear DNG files (*.dng)|*.dng'}
+            wildcard = kinds.get(e, kinds['tif']) + "|All files (*.*)|*.*"
         elif self.mode == 'mask':
             title = "Save Mask"
             df = str(self.filename.stem + "_mask.png")
@@ -946,6 +1176,8 @@ class MainFrame(wx.Frame):
             if fd.ShowModal() == wx.ID_CANCEL:
                 return True
             path = fd.GetPath()
+            if self.mode == 'upscale' and not os.path.splitext(path)[1]:
+                path += ext
             if self.mode == 'denoise' and not path.lower().endswith(
                     ('.tif', '.tiff', '.dng')):
                 dng_first = self.engine.default_format == 'dng'
@@ -1131,6 +1363,26 @@ class MainFrame(wx.Frame):
             return
         self._set_busy(True)
         self.statusbar.SetStatusText("Denoising...")
+        out = self._run_with_progress(
+            "Denoising", lambda done, err, prog:
+            e.denoise_async(model, done, err, prog))
+        if out is None:
+            self._set_busy(False)
+            return
+        kind, args = out
+        if kind == 'done':
+            self._denoise_done(*args, model)
+        elif isinstance(args[0], denoise.Cancelled):
+            self._set_busy(False)
+            self.statusbar.SetStatusText("Denoising cancelled")
+        else:
+            self._denoise_failed(args[0])
+
+    def _run_with_progress(self, title, start):
+        """Run a background job with a modal progress dialog.  `start(done,
+        error, progress)` starts it (returning False if it did not start);
+        the result is ('done', args) or ('error', args), or None."""
+        e = self.engine
         state = {'k': 0, 'n': 0, 'out': None}
 
         def progress(k, n):
@@ -1139,15 +1391,11 @@ class MainFrame(wx.Frame):
         def finish(kind, *args):
             state['out'] = (kind, args)
 
-        if not e.denoise_async(
-                model,
-                lambda r, a: finish('done', r, a),
-                lambda ex: finish('error', ex),
-                progress):
-            self._set_busy(False)
-            return
+        if not start(lambda *a: finish('done', *a),
+                     lambda ex: finish('error', ex), progress):
+            return None
         dlg = wx.ProgressDialog(
-            "Denoising", "Loading the model...", maximum=1000, parent=self,
+            title, "Loading the model...", maximum=1000, parent=self,
             style=wx.PD_APP_MODAL | wx.PD_CAN_ABORT | wx.PD_ELAPSED_TIME |
             wx.PD_REMAINING_TIME | wx.PD_SMOOTH)
         cancelling = False
@@ -1159,7 +1407,7 @@ class MainFrame(wx.Frame):
                 keep = dlg.Pulse("Loading the model...")
             else:
                 keep = dlg.Update(min(int(1000 * k / n), 999),
-                                  f"Denoising... tile {k} of {n}")
+                                  f"{title}... tile {k} of {n}")
             if isinstance(keep, tuple):
                 keep = keep[0]
             if not keep and not cancelling:
@@ -1168,14 +1416,7 @@ class MainFrame(wx.Frame):
             wx.MilliSleep(50)
             wx.YieldIfNeeded()
         dlg.Destroy()
-        kind, args = state['out']
-        if kind == 'done':
-            self._denoise_done(*args, model)
-        elif isinstance(args[0], denoise.Cancelled):
-            self._set_busy(False)
-            self.statusbar.SetStatusText("Denoising cancelled")
-        else:
-            self._denoise_failed(args[0])
+        return state['out']
 
     def _ensure_model(self, tier):
         """Offer to download the model if its file is missing; return True
@@ -1234,6 +1475,8 @@ class MainFrame(wx.Frame):
         if self.mode == 'denoise':
             self.engine.conf.denoise_model = \
                 self.choice_model.GetStringSelection()
+        if self.mode == 'upscale':
+            self.engine.conf.upscale_scale = self.engine.scale
         self.engine.conf.save()
         event.Skip()
 
@@ -1380,7 +1623,8 @@ def set_dock_icon():
 
 def ask_mode():
     """Ask which mode to use; return None if the dialog is cancelled."""
-    modes = [('mask', "AI masking: build a mask from clicks"),
+    modes = [('upscale', "AI upscaling (2x or 4x) of an image"),
+             ('mask', "AI masking: build a mask from clicks"),
              ('heal', "AI healing: remove objects (generative fill)"),
              ('denoise', "Raw denoising of a mosaiced DNG")]
     # (wx.SingleChoiceDialog has a broken layout on macOS: use plain sizers)
@@ -1433,6 +1677,9 @@ def main(conf, filename=None, mode=None, outdir=None, opts=None):
         elif mode == 'denoise':
             import denoise_engine
             eng = denoise_engine.DenoiseEngine(conf, opts)
+        elif mode == 'upscale':
+            import upscale_engine
+            eng = upscale_engine.UpscaleEngine(conf, opts)
         else:
             import engine
             eng = engine.AIMaskingEngine(conf)

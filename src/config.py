@@ -102,6 +102,19 @@ LINEAR_DENOISE_MODELS = {
         '0074e2f7bec359c613305811c2c4e7123f738010fb3a98ce67044c48ecfc0129'),
 }
 
+# Real-ESRGAN (BSD-3-Clause) upscaling networks for --mode upscale, exported to
+# ONNX by SceneWorks (https://huggingface.co/SceneWorks/real-esrgan-onnx,
+# pinned to a commit): scale -> (file name, url, size, sha256)
+_ESRGAN_URL = 'https://huggingface.co/SceneWorks/real-esrgan-onnx/resolve/09f741bac80a246b407da3ee902bf5f3291b602f/'
+UPSCALE_MODELS = {
+    2: ('real_esrgan_x2.onnx', _ESRGAN_URL + 'real_esrgan_x2.onnx',
+        67_073_434,
+        '7115ba92e8a1bfa63d68558ef006ef3d91273a068d321b1439f8bb1c9179002c'),
+    4: ('real_esrgan_x4.onnx', _ESRGAN_URL + 'real_esrgan_x4.onnx',
+        67_051_616,
+        '5c586662929cbc686c1a5c38d9c060dbdb4ea5863a1f7672b8c0761e6b89c033'),
+}
+
 
 def denoise_models(kind):
     """The model registry for a kind of DNG: 'mosaic' or 'linear'."""
@@ -132,6 +145,13 @@ class Config:
     denoise_tile: int = 1024
     denoise_margin: int = 96
     denoise_dng_bits: int = 16          # 16 (integer) or 32 (float) DNG output
+    # AI upscaling
+    upscale_scale: int = 2              # 2 or 4
+    upscale_provider: str = "auto"      # onnxruntime provider
+    upscale_tile: int = 512
+    upscale_margin: int = 16
+    upscale_dng_bits: int = 16          # 16 (integer) or 32 (float) DNG output
+    upscale_compare: str = "nearest"    # GUI: "nearest" or "lanczos"
     brush_radius: float = 30.0
     brush_feather: float = 0.3
     brush_opacity: float = 1.0
@@ -165,6 +185,9 @@ class Config:
 
     def get_denoise_model_file(self, tier, kind='mosaic'):
         return Config.models_dir() / denoise_models(kind)[tier][0]
+
+    def get_upscale_model_file(self, scale):
+        return Config.models_dir() / UPSCALE_MODELS[scale][0]
 
     @staticmethod
     def get_config_file(legacy=False):

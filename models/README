@@ -18,3 +18,8 @@ Raw denoising models (see `SMART --download-denoise-model`) are also put here:
  - treenet-light.onnx (small), treenet.onnx (medium), treenet-heavy.onnx
    (large), for linear DNGs: RawForge TreeNet, MIT,
    https://huggingface.co/AyedaOk/rawlab-models
+
+AI upscaling models (see `SMART --download-upscale-model`) are also put here:
+ - real_esrgan_x2.onnx, real_esrgan_x4.onnx: Real-ESRGAN x2plus / x4plus
+   (BSD-3-Clause), ONNX export by SceneWorks,
+   https://huggingface.co/SceneWorks/real-esrgan-onnx
