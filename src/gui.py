@@ -1788,7 +1788,17 @@ def main(conf, filename=None, mode=None, outdir=None, opts=None):
             eng = upscale_engine.UpscaleEngine(conf, opts)
         else:
             import engine
-            eng = engine.AIMaskingEngine(conf)
+            busy = None
+            if str(getattr(conf, 'mask_provider', 'cpu')).lower() in (
+                    'coreml', 'coremlexecutionprovider'):
+                busy = wx.BusyInfo('Loading the SAM2 model (with CoreML '
+                                   'this takes about 2 minutes, longer '
+                                   'the first time)...')
+                wx.Yield()
+            try:
+                eng = engine.AIMaskingEngine(conf)
+            finally:
+                del busy
         frame = MainFrame(conf, eng, mode, outdir,
                           getattr(opts, 'save_as', None))
         def fixgeom():

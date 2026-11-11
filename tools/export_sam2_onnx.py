@@ -130,8 +130,48 @@ def sha256(path):
     return h.hexdigest()
 
 
+def patch_window_ops():
+    """Rewrite Hiera's window (un)partition with rank <= 5 tensors.
+
+    The original code reshapes to 6-D tensors, which the onnxruntime CoreML
+    execution provider rejects (rank > 5): the graph then splits into ~90
+    partitions and loading it with CoreML takes minutes. The encoder is
+    always exported with batch size 1, so the leading dimension can be
+    dropped; the results are identical.
+    """
+    import torch.nn.functional as F
+    from sam2.modeling.backbones import hieradet
+
+    def window_partition(x, window_size):
+        _, H, W, C = x.shape
+        pad_h = (window_size - H % window_size) % window_size
+        pad_w = (window_size - W % window_size) % window_size
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, 0, 0, pad_w, 0, pad_h))
+        Hp, Wp = H + pad_h, W + pad_w
+        x = x.reshape(Hp // window_size, window_size,
+                      Wp // window_size, window_size, C)
+        windows = x.permute(0, 2, 1, 3, 4).reshape(
+            -1, window_size, window_size, C)
+        return windows, (Hp, Wp)
+
+    def window_unpartition(windows, window_size, pad_hw, hw):
+        Hp, Wp = pad_hw
+        H, W = hw
+        x = windows.reshape(Hp // window_size, Wp // window_size,
+                            window_size, window_size, -1)
+        x = x.permute(0, 2, 1, 3, 4).reshape(1, Hp, Wp, -1)
+        if Hp > H or Wp > W:
+            x = x[:, :H, :W, :]
+        return x
+
+    hieradet.window_partition = window_partition
+    hieradet.window_unpartition = window_unpartition
+
+
 def build(size, checkpoint):
     from sam2.build_sam import build_sam2
+    patch_window_ops()
     cfg = f"configs/sam2.1/sam2.1_hiera_{SIZES[size]}.yaml"
     return build_sam2(cfg, checkpoint, device="cpu").eval()
 

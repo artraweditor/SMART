@@ -27,7 +27,7 @@ def resource_dir():
 # sha256), (decoder file name, url, size, sha256)).
 # The files are in https://huggingface.co/agriggio/smart-onnx-models (pinned to
 # a commit).
-_HF_URL = 'https://huggingface.co/agriggio/smart-onnx-models/resolve/0a80c612c962a226e261c66c78e00354543cb3fa/'
+_HF_URL = 'https://huggingface.co/agriggio/smart-onnx-models/resolve/4272f336b52488f5e73a7b602a03994019f5e039/'
 _SAM2_URL = _HF_URL
 def _sam2(q, esize=None, esha=None, dsize=None, dsha=None):
     def f(kind, size, sha):
@@ -51,8 +51,8 @@ MASK_MODELS = {
         16_508_159,
         '89a0854ccf41ea96b75a1ae60cc8582936bf52dc602d4df8072f750413945c01'),
     'large': _sam2(
-        'large', 852_451_097,
-        'c4de4a5e5c0dfbf3434a53a23b6cb7edc2172e472becb0754f1d2840cea35960',
+        'large', 855_699_730,
+        '7a295e5836bfb0aa0df6cb980dae1727aff4feed662bf7f40bb477bef50bce3d',
         16_508_159,
         '76ba67bd3f608ba9c5ef1ab3fa2f312f7754afbe96fcd1cc36d691072d56e555'),
 }

@@ -8,6 +8,7 @@ the previous prediction).
 """
 
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -94,8 +95,12 @@ class Sam2Predictor:
         self._so = so
         stem = Path(encoder_path).stem
         self.provider = provider
-        self.enc = ort.InferenceSession(
-            self._enc_path, so, providers=_providers(provider, stem))
+        chain = _providers(provider, stem)
+        if not isinstance(chain[0], str):
+            print('Loading the SAM2 model with CoreML (about 2 minutes; '
+                  'the first run takes several minutes longer)...',
+                  file=sys.stderr, flush=True)
+        self.enc = ort.InferenceSession(self._enc_path, so, providers=chain)
         # the decoder is small: always on the CPU
         self.dec = ort.InferenceSession(
             str(decoder_path), so, providers=['CPUExecutionProvider'])
